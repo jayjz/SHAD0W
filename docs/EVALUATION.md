@@ -20,8 +20,13 @@ P0.5B compares caller-supplied adverse bps assumptions at the price level only: 
 | Fees | Implemented in P0.5C as synthetic bps of absolute final executed notional; no broker schedule claim |
 | Market impact | Not implemented |
 | Partial fills | Not implemented |
-| P&L and portfolio/performance evaluation | Not implemented |
+| Per-trade gross/net result and return | Implemented in P1A for ordinary completed trades only |
+| Portfolio/performance evaluation | Not implemented |
 
 P0.5C fees use the final slipped execution price times fixed quantity, with no extra spread or slippage charge. The resulting BUY/SELL execution cash flow describes one fill only; it is not cash, P&L, settlement, or portfolio state. Quote currency is caller-declared, with no FX or minor-unit rounding. Zero/negative execution-price results remain explicit stress-domain evidence and do not establish ordinary feasibility.
 
-Without quote depth, participation, depth consumption, partial fills, or impact, the model cannot claim complete market microstructure realism. P0.5 is complete only under the bounded definition of quote-side pricing, deterministic slippage, fixed quantity, and proportional fee evidence. P1A trade reconstruction and the first historical-evaluation foundation are next; complete experiment identity, gross/net trade evaluation, and performance evidence remain absent until then.
+P1A adds a read-only evaluation boundary over a supplied `SimulationResult` with P0.5C economics enabled. It reconciles every lifecycle event, execution attempt/outcome, filled economic execution, final lifecycle state, unresolved action, and open position before pairing one authoritative long entry with its authoritative exit. Missing, duplicate, stale, future, mismatched, or causally inconsistent evidence fails closed. End-of-stream pending/open state remains incomplete evidence; it is never treated as a close.
+
+Each result has an immutable experiment manifest. It identifies the validated bar dataset plus supplied quote and opportunity evidence, strategy/execution/economics configurations, feature/simulation implementation versions, the full supplied simulation evidence, caller-supplied code revision, and mandatory limitations. Identity is deterministic but does not authenticate caller-supplied evidence or revision. Completed trades expose gross result, total fee, net result, and—only when both execution prices are positive—gross/net return. Any zero or negative execution price is explicit stress evidence, excluded from ordinary return and currency aggregate metrics. Ordinary aggregates are separated by caller-declared quote currency and report only descriptive sums and win/loss/flat counts.
+
+P1A is not portfolio or performance evaluation. It adds no cash balance, settlement, funded buying power, compounding, partial closes, FX conversion, minor-unit rounding, drawdown, Sharpe, benchmark, holdout, walk-forward, selection correction, parameter stability, or evidence of edge. Without quote depth, participation, depth consumption, partial fills, or impact, the model also cannot claim complete market microstructure realism.

@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: bounded P0.5 execution economics complete**
+**Current milestone: P1A trade reconstruction and historical-evaluation foundation complete**
 
-**Next proposed slice: P1A trade reconstruction and first historical-evaluation foundation**
+**No further P1 implementation is authorized.**
 
 Implemented so far:
 
@@ -72,7 +72,7 @@ Implemented so far:
 | Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, lifecycle, and execution       |
 | Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
 | Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
-| Evaluation engine              | ⏳ Planned        | Holdouts, walk-forward, stability, ablation, performance evidence                                     |
+| Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
 | Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
 | Alpaca paper execution         | ⏳ Planned        | Broker adapter behind stable contracts                                                                |
@@ -545,7 +545,11 @@ P0.5 is complete under the bounded definition of quote-side executable pricing, 
 
 ### P1 — Evaluation ⏳
 
-P1A is next: reconstruct entry/exit executions into trades and establish the first historical-evaluation foundation. Later P1 work will build the evidence needed to determine whether the hypothesis survives scrutiny:
+#### P1A — Trade reconstruction and historical-evaluation foundation ✅
+
+P1A reconstructs only authoritative, filled entry/exit economic executions into completed long trades. It preserves unresolved lifecycle state rather than manufacturing an end-of-stream close; rejects incomplete, stale, future, mismatched, or internally inconsistent fill evidence; and keeps nonpositive-price trades explicit as stress evidence outside ordinary returns and aggregates. Each evaluation has an immutable manifest covering supplied bar/quote/opportunity evidence, configuration, implementation versions, caller-supplied code revision, and limitations. Ordinary completed trades have gross/net results and returns, while aggregates remain separated by caller-declared quote currency. This is descriptive evidence only: it adds no cash balance, portfolio, compounding, buying power, FX conversion, or claim of edge.
+
+Later P1 work will build the evidence needed to determine whether the hypothesis survives scrutiny:
 
 * development / validation / final-holdout separation;
 * chronological walk-forward analysis;

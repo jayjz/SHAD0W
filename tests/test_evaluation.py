@@ -19,7 +19,7 @@ from shadow.evaluation import (
     reconstruct_trades,
 )
 from shadow.execution import ExecutionEconomicsConfig, ExecutionStatus, attach_execution_economics
-from shadow.simulation import LifecycleState, SimulationInput, SimulationResult, run_simulation
+from shadow.simulation import LifecycleState, SimulationInput, run_simulation
 from tests.test_simulation_runner import (
     QQQ,
     SPY,
@@ -504,15 +504,33 @@ def test_small_price_fee_loops_obey_trade_invariants() -> None:
 def test_stale_fill_cannot_be_presented_as_an_ordinary_trade() -> None:
     """ExecutionOutcome validates price, but not the quote's causal freshness."""
     result = run_simulation(_run_input())
-    trade, = reconstruct_trades(result).completed_trades
+    (trade,) = reconstruct_trades(result).completed_trades
     original_quote = trade.entry.outcome.market_evidence
     assert original_quote is not None
     stale = replace(original_quote, observation_time=START - timedelta(days=2))
     outcome = replace(trade.entry.outcome, market_evidence=stale)
     economic = replace(trade.entry, outcome=outcome)
     with pytest.raises(EvaluationError, match="stale"):
-        replace(trade, entry=economic,
-                opening_record=replace(trade.opening_record, execution_outcome=outcome))
+        replace(
+            trade,
+            entry=economic,
+            opening_record=replace(trade.opening_record, execution_outcome=outcome),
+        )
+
+
+def test_fill_execution_model_must_match_its_declared_configuration() -> None:
+    (trade,) = reconstruct_trades(run_simulation(_run_input())).completed_trades
+    attempt = replace(trade.entry.outcome.attempt, execution_model_id="different-model")
+    outcome = replace(trade.entry.outcome, attempt=attempt)
+    economic = replace(trade.entry, outcome=outcome)
+    with pytest.raises(EvaluationError, match="execution model"):
+        replace(
+            trade,
+            entry=economic,
+            opening_record=replace(
+                trade.opening_record, execution_attempt=attempt, execution_outcome=outcome
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -524,12 +542,15 @@ def test_stale_fill_cannot_be_presented_as_an_ordinary_trade() -> None:
     ],
 )
 def test_evaluation_numeric_domain_failures_are_explicit(
-    entry: str, exit_price: str, quantity: str,
+    entry: str,
+    exit_price: str,
+    quantity: str,
 ) -> None:
     source = _run_input(entry=entry, exit_price=exit_price)
-    source = replace(source, economics_configs=(
-        ExecutionEconomicsConfig(SPY, Decimal(quantity), "USD", Decimal(0)),
-    ))
+    source = replace(
+        source,
+        economics_configs=(ExecutionEconomicsConfig(SPY, Decimal(quantity), "USD", Decimal(0)),),
+    )
     result = run_simulation(source)
     assert len(result.economic_executions) == 2
     with pytest.raises(EvaluationError, match="numeric domain"):
@@ -540,38 +561,52 @@ def test_rebinding_second_exit_to_first_entry_fails_even_with_valid_individual_f
     result = run_simulation(_run_input(count=5))
     first, second = reconstruct_trades(result).completed_trades
     false_close = replace(second.closing_record, position=first.closing_record.position)
-    records = tuple(false_close if record == second.closing_record else record
-                    for record in result.lifecycle.records)
+    records = tuple(
+        false_close if record == second.closing_record else record
+        for record in result.lifecycle.records
+    )
     with pytest.raises(EvaluationError, match="authoritative open position"):
         reconstruct_trades(replace(result, lifecycle=replace(result.lifecycle, records=records)))
 
 
 def test_future_quote_cannot_be_hidden_inside_a_completed_trade() -> None:
-    trade, = reconstruct_trades(run_simulation(_run_input())).completed_trades
+    (trade,) = reconstruct_trades(run_simulation(_run_input())).completed_trades
     quote = trade.entry.outcome.market_evidence
     assert quote is not None
     quote = replace(quote, availability_time=trade.exit_time)
     outcome = replace(trade.entry.outcome, market_evidence=quote)
     economic = replace(trade.entry, outcome=outcome)
     with pytest.raises(EvaluationError, match="future"):
-        replace(trade, entry=economic,
-                opening_record=replace(trade.opening_record, execution_outcome=outcome))
+        replace(
+            trade,
+            entry=economic,
+            opening_record=replace(trade.opening_record, execution_outcome=outcome),
+        )
 
 
 def test_trade_cannot_close_before_its_entry() -> None:
-    trade, = reconstruct_trades(run_simulation(_run_input())).completed_trades
+    (trade,) = reconstruct_trades(run_simulation(_run_input())).completed_trades
     action = trade.closing_record.action
     assert action is not None
     early = START + timedelta(seconds=1)
     action = replace(action, created_time=START, eligibility_after_time=START)
-    attempt = replace(trade.exit.outcome.attempt, attempt_time=early, opportunity_time=early,
-                      eligibility_after_time=START)
+    attempt = replace(
+        trade.exit.outcome.attempt,
+        attempt_time=early,
+        opportunity_time=early,
+        eligibility_after_time=START,
+    )
     quote = trade.exit.outcome.market_evidence
     assert quote is not None
     quote = replace(quote, observation_time=START, availability_time=START)
     outcome = replace(trade.exit.outcome, attempt=attempt, market_evidence=quote)
     economic = replace(trade.exit, outcome=outcome)
-    record = replace(trade.closing_record, action=action, execution_attempt=attempt,
-                     execution_outcome=outcome, event_time=early)
+    record = replace(
+        trade.closing_record,
+        action=action,
+        execution_attempt=attempt,
+        execution_outcome=outcome,
+        event_time=early,
+    )
     with pytest.raises(EvaluationError, match="causally"):
         replace(trade, exit=economic, closing_record=record)

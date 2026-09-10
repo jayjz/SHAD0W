@@ -83,8 +83,13 @@ def validate_fill(record: LifecycleRecord, economic: EconomicExecution) -> None:
     ):
         raise EvaluationError("entry position must reference its opening action and fill time")
     quote = economic.outcome.market_evidence
+    execution_config = economic.outcome.execution_config
     if quote is None or quote.availability_time > attempt.attempt_time:
         raise EvaluationError("fill cannot use future quote evidence")
+    if attempt.execution_model_id != execution_config.execution_model_id:
+        raise EvaluationError("fill execution model must match its declared configuration")
+    if attempt.attempt_time - quote.observation_time > execution_config.maximum_quote_age:
+        raise EvaluationError("fill cannot use stale quote evidence")
 
 
 @dataclass(frozen=True, slots=True)
