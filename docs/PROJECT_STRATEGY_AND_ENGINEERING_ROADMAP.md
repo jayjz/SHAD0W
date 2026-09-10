@@ -12,7 +12,8 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 - **P0.2B — strategy-facing indicators and feature composition: COMPLETE (no additional code required).** The first hypothesis composes and thresholds P0.2A close z-score evidence: `price < mean - k * std` is representable as `z_score < -k`. No redundant Bollinger-band wrapper, RSI, or composition framework was added.
 - **P0.3 — minimal mean-reversion baseline: COMPLETE.** One immutable-configured, provider-neutral, signal-only close z-score hypothesis proposes long entry or exit evidence. It is unvalidated and makes no profitability claim; risk remains independent.
 - **P0.4A — chronological event semantics: COMPLETE.** Immutable availability/event evidence, canonical event ordering, and strict later-opportunity eligibility prevent same-bar completed-close execution without creating fills or portfolio state.
-- **P0.4B — position/order lifecycle: NEXT.** Define the smallest authoritative lifecycle and conflict-resolution mechanics compatible with P0.4A; do not add pricing, costs, or performance accounting incidentally.
+- **P0.4B — authoritative position/order lifecycle: COMPLETE.** Immutable per-instrument `flat`/`pending_entry`/`holding`/`pending_exit` state, deterministic conflict policy, strict P0.4A eligibility composition, unresolved-state reporting, and reconstructable transition evidence exist without prices, quantities, costs, P&L, or broker behavior.
+- **P0.4C — end-to-end chronological simulator: NEXT.** Compose market observations, features, strategy proposals, timeline eligibility, and authoritative lifecycle state into one deterministic chronological simulation run; do not add economic execution modeling incidentally.
 - **P0.5 — transaction-cost/fill model:** evaluate explicit spread, slippage, latency, rejected-fill, and execution-constraint assumptions.
 
 ## P1 — evaluation

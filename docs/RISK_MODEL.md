@@ -6,6 +6,8 @@ Risk is a future independent deterministic engine, not strategy logic. A signal 
 
 P0.3's `Signal` is deliberately only a proposal with reconstructable feature evidence. It has no order fields or authority to size, execute, or authorize a trade.
 
+P0.4B's `LifecycleAction` and simulated lifecycle state are likewise not risk authorization or an order. They make the causal state consequence of already-legal strategy evidence explicit for research simulation, with no quantity, price, broker, or economic effect. A future risk component remains the independent authority to authorize or reject any execution intent in a full simulation or operational design.
+
 ## Future control categories
 
 The architecture must accommodate exposure and position limits, maximum-loss constraints, catastrophic stops, stale-data vetoes, volatility controls, concurrent-position limits, session constraints, and portfolio reconciliation. These are architectural categories, not P0.0 parameter choices.
