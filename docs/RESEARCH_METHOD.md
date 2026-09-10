@@ -10,7 +10,7 @@ Evidence should be reproducible from immutable dataset identity and provenance, 
 
 Use chronological train/development/validation/final-holdout partitions appropriate to the hypothesis. Final holdout data is not used to choose parameters. Walk-forward evaluation should repeat the chronological process across successive windows when enough data exists.
 
-Prevent look-ahead bias by modeling when each datum became available. Completed-bar strategies cannot assume knowledge of that bar's future path to obtain a same-bar fill. Address survivorship bias when the instrument universe can change over time. Preserve timestamp timezone and session semantics throughout processing.
+Prevent look-ahead bias by modeling when each datum became available. P0.1 represents completed bars at interval end and records a separate UTC availability instant; later decision/simulation code must consume only records whose availability instant has arrived. Completed-bar strategies cannot assume knowledge of that bar's future path to obtain a same-bar fill. Address survivorship bias when the instrument universe can change over time. Preserve source timezone and session semantics as provenance throughout processing.
 
 ## Falsification and robustness
 

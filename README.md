@@ -2,7 +2,7 @@
 
 SHAD0W is a deterministic quantitative research laboratory. Its central question is whether a precisely specified market hypothesis produces a reproducible, executable, risk-adjusted edge after realistic costs.
 
-P0.0 establishes the repository operating foundation only. It contains no trading strategy, market-data implementation, simulator, broker integration, order submission, or LLM integration. P0.1 will introduce deterministic market-data contracts.
+P0.0 established the repository operating foundation. P0.1 establishes typed, provider-neutral market-data contracts with UTC availability semantics, deterministic validation, provenance, canonical SHA-256 dataset identity, and local synthetic fixtures. It contains no strategy, feature engine, simulator, broker integration, order submission, or LLM integration. P0.2 is the next milestone.
 
 ## Development
 
@@ -16,7 +16,7 @@ uv run ruff format --check .
 uv run mypy src tests
 ```
 
-The smoke test verifies that the bootstrap package can be imported; it is not evidence that research or trading behavior is correct. See [the roadmap](docs/PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md), [architecture](docs/ARCHITECTURE.md), and [research method](docs/RESEARCH_METHOD.md).
+The checks cover contract behavior, not research or trading profitability. See [data contracts](docs/DATA_CONTRACTS.md), [the roadmap](docs/PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md), [architecture](docs/ARCHITECTURE.md), and [research method](docs/RESEARCH_METHOD.md).
 
 ## License
 

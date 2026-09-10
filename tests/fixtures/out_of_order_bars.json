@@ -1,0 +1,4 @@
+[
+  {"instrument":"SPY","interval_seconds":60,"observation_time":"2024-01-02T14:32:00Z","availability_time":"2024-01-02T14:32:01Z","open":"470.20","high":"470.40","low":"470.10","close":"470.15","volume":"0"},
+  {"instrument":"SPY","interval_seconds":60,"observation_time":"2024-01-02T14:31:00Z","availability_time":"2024-01-02T14:31:01Z","open":"470.00","high":"470.30","low":"469.90","close":"470.20","volume":"1200"}
+]

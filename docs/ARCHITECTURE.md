@@ -20,6 +20,12 @@ SHAD0W begins as a Python modular monolith with explicit ports/adapters boundari
 
 The intended flow is data → normalization/validation → features → strategy signal → regime → risk → decision → execution/cost model → simulation or later execution surface → evidence/evaluation. Every boundary carries typed domain values rather than provider SDK, Pandas, HTTP, or LLM response objects.
 
+## Implemented P0.1 data boundary
+
+The current `domain` and `data` modules provide immutable provider-neutral `Bar`, `Quote`, provenance, and dataset-metadata values plus fail-closed collection validation and canonical dataset identity. They deliberately contain no ingestion adapter: a future adapter must translate provider timestamps and source conventions before creating these values. The boundary accepts neither provider responses nor dataframe objects.
+
+For a `Bar`, `observation_time` is the **end** of its represented interval. `availability_time` is the earliest modeled instant at which a strategy may consume the completed record; the source of that assertion is an explicit availability-semantics value. Both timestamps are normalized to UTC, while source timezone/session descriptions remain provenance. This permits a later simulation to enforce availability without retroactively changing a record.
+
 ## Authority and time
 
 Strategies propose trades; risk authorizes or rejects them. Missing, stale, inconsistent, or invalid critical state results in no trade. Completed-bar decisions may only consume information modeled as available at that decision time; future OHLC path information cannot be used to justify a same-bar fill.

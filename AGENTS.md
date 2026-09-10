@@ -2,7 +2,7 @@
 
 ## Mission and phase
 
-SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. The current phase is **P0.0: repository operating foundation**. The next milestone is P0.1 deterministic market-data contracts; do not start it incidentally.
+SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.1 deterministic market-data contracts is complete.** The next authorized milestone is P0.2 deterministic feature engine; do not start it incidentally.
 
 ## Source of truth
 

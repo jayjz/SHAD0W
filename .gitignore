@@ -21,7 +21,7 @@ build/
 .env.*
 !.env.example
 .uv-cache/
-data/
+/data/
 artifacts/
 
 # Editors and operating systems
