@@ -21,7 +21,7 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 
 ## P1 — evaluation
 
-**P1A is next:** reconstruct individual entry/exit economic executions into trades and establish the first historical-evaluation foundation. Complete experiment identity belongs in this phase. Later P1 work builds metrics, temporal development/validation/final-holdout separation, walk-forward evaluation, parameter-stability analysis, and ablation testing. Advancement requires evidence robust to costs, reasonable execution assumptions, and known limitations.
+**P1A — trade reconstruction and historical-evaluation foundation: COMPLETE.** Immutable evaluation replays the canonical lifecycle trace without rerunning strategy or execution selection, pairs only matching filled entry/exit economic executions, retains unsuccessful and incomplete evidence, and fails closed on inconsistent causal, configuration, and accounting references. Completed ordinary trades expose gross/net results and returns; nonpositive-price outcomes remain explicit stress evidence outside ordinary aggregates. Currency-separated descriptive summaries never mix caller-declared denominations. An immutable manifest identifies the supplied bar, quote, opportunity, configuration, implementation, complete simulation evidence, caller-supplied code revision, and declared limitations. P1A adds no funded portfolio, compounding, FX, holdout, walk-forward, parameter-selection, benchmark, or profitability claim. No next P1 slice is authorized.
 
 ## P2–P9 — evidence-gated directions
 

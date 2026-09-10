@@ -22,7 +22,7 @@ Failures use `MarketDataValidationError` with an invariant name and, for collect
 
 ## Numeric policy
 
-P0.1 accepts `Decimal` at the domain boundary. This avoids binary-float representation differences while remaining standard-library-only and sufficient for deterministic research-data canonicalization. Adapter code must deliberately convert external numeric values. Decimal NaN and infinities are rejected. Canonical serialization renders all numerical zero, including `Decimal("-0")`, as `"0"`; equal finite Decimal values with different exponent/trailing-zero representation serialize identically. Integer fixed-point was not chosen because asset/source precision varies and no P0.1 scale contract exists.
+P0.1 accepts `Decimal` at the domain boundary. This avoids binary-float representation differences while remaining standard-library-only and sufficient for deterministic research-data canonicalization. Adapter code must deliberately convert external numeric values. Decimal NaN and infinities are rejected. Canonical serialization renders all numerical zero, including `Decimal("-0")`, as `"0"`; equal finite Decimal values with different exponent/trailing-zero representation serialize identically, without rounding in the caller's mutable Decimal context. Integer fixed-point was not chosen because asset/source precision varies and no P0.1 scale contract exists.
 
 ## Canonical dataset identity
 
@@ -124,3 +124,23 @@ All arithmetic uses a fresh explicit context with 34 significant digits, `ROUND_
 Only `filled` outcomes can produce an `EconomicExecution`; `unfilled` and `rejected` outcomes produce none and incur no ordinary execution fee. Fees use the final P0.5B modeled price, so quote-side spread and slippage are already represented and are not deducted again. P0.5B can produce zero or negative prices in declared stress scenarios. P0.5C preserves those outcomes, takes the absolute executed notional as its nonnegative fee base, and maintains algebraic BUY/SELL cash-flow signs. Such evidence is stress-domain output and does not establish ordinary market feasibility; later evaluation must not silently treat it as an ordinary observation.
 
 P0.5C has no feedback into features, strategy, chronology, opportunities, quote selection, fill status/price, retry behavior, or lifecycle transitions. It also adds no sizing authority, liquidity assertion, partial fills, market impact, portfolio accounting, P&L, or broker behavior. Future input extensions cannot rewrite prior economic executions, and repeated equivalent inputs reproduce identical evidence.
+
+## P1A trade reconstruction and historical evaluation
+
+`shadow.evaluation.reconstruct_trades` accepts only a `SimulationResult` whose P0.5C economics configuration is enabled. It is a reconciliation boundary, not a second simulator: its result is derived solely from immutable supplied timeline, lifecycle, execution, economics, and final-state evidence. It requires exact unique coverage of events, lifecycle records, attempts, outcomes, economics executions, configured instruments, final states, unresolved actions, and open positions. Filled outcomes require exactly one economic execution; unfilled/rejected outcomes are retained separately and never become a trade.
+
+Each completed `TradeRecord` pairs a filled long entry and filled long exit only through the same authoritative `SimulatedPosition.opening_action_id`. Entry and exit must have the same instrument, fixed quantity, and caller-declared quote currency; partial closes and FX conversion are not modeled. Both fills must retain the action/attempt/opportunity chain, exact lifecycle transition, matching execution-model configuration, causally available quote, and quote freshness under that configuration. Evaluation fails closed instead of accepting altered, stale, future, duplicate, omitted, or orphaned evidence. Final pending/open lifecycle states remain incomplete; P1A never creates a synthetic end-of-stream exit.
+
+For a completed trade with entry price `p_in`, exit price `p_out`, fixed quantity `q`, entry fee `f_in`, and exit fee `f_out`, P1A uses the deterministic Decimal formulas:
+
+```text
+gross_result = (p_out - p_in) * q
+total_fees = f_in + f_out
+net_result = gross_result - total_fees
+gross_return = gross_result / entry_gross_notional
+net_return = net_result / entry_gross_notional
+```
+
+The return denominator and both returns exist only when entry and exit prices are strictly positive. If either price is zero or negative, the trade is `stress_price` evidence: gross/net monetary algebra and fees remain visible, but ordinary returns and aggregate performance inclusion are prohibited. Ordinary totals are grouped strictly by the caller-declared quote currency and provide gross, fee, and net sums plus win/loss/flat counts; P1A never mixes currencies or presents a portfolio total.
+
+`ExperimentManifest` requires SHA-256 fingerprints for the validated bar dataset, supplied quote multiset, supplied execution-opportunity multiset, strategy configuration, execution configuration, economics configurations, and complete supplied simulation evidence. It also records feature/simulation implementation versions, caller-supplied code revision, optional caller labels, an evaluation-model identity, and mandatory limitations. Canonical identity is independent of incidental evidence order and mutable Decimal context, retains duplicate supplied evidence, and does not claim authentication or unavailable generator identity. Quote evidence deliberately has no dataset-level provenance metadata in `SimulationResult`.

@@ -25,7 +25,13 @@ def _decimal(value: Decimal | None) -> str | None:
         return None
     if value.is_zero():
         return "0"
-    return format(value.normalize(), "f")
+    # normalize() rounds in the caller's context and can collapse distinct data.
+    sign, digits, exponent = value.as_tuple()
+    assert isinstance(exponent, int)
+    while len(digits) > 1 and digits[-1] == 0:
+        digits = digits[:-1]
+        exponent += 1
+    return format(Decimal((sign, digits, exponent)), "f")
 
 
 def _metadata(metadata: DatasetMetadata, observation_kind: str) -> dict[str, Any]:
@@ -135,3 +141,28 @@ def dataset_fingerprint(
 ) -> str:
     """Return the SHA-256 hex digest of validated canonical dataset bytes."""
     return hashlib.sha256(canonical_dataset_bytes(observations, metadata)).hexdigest()
+
+
+def quote_evidence_fingerprint(quotes: Sequence[Quote]) -> str:
+    """Identify the runner's supplied quote multiset, without invented metadata.
+
+    Reuse P0.1 record serialization, retaining duplicates, mixed sources and
+    equal-observation-time alternatives allowed by execution. This is evidence
+    identity, not a validated dataset identity. Exact Decimal representations
+    are also material: execution v2 uses them in its quote-reference tie-break.
+    Empty evidence has an explicit fingerprint.
+    """
+    records = []
+    for quote in quotes:
+        if not isinstance(quote, Quote):
+            raise MarketDataValidationError("quote_evidence", "must contain only Quote values")
+        record = _quote_record(quote)
+        record["decimal_representations"] = [
+            None if value is None else value.as_tuple()
+            for value in (quote.bid_price, quote.ask_price, quote.bid_size, quote.ask_size)
+        ]
+        records.append(record)
+    records.sort(key=_encoded_record)
+    return hashlib.sha256(
+        _encoded_record({"schema": "shadow.quote-evidence.v1", "records": records})
+    ).hexdigest()
