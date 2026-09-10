@@ -43,3 +43,9 @@ Event intelligence, if introduced, has observational authority: it may produce a
 ## Deliberate non-requirements
 
 P0.0 does not need LangGraph, Redis, Kafka, Celery, Kubernetes, microservices, a web frontend, or Postgres. There is no concrete workload, deployment, queueing, shared-cache, multi-user, or persistence requirement that justifies their operational cost. Introduce a technology only behind a stable boundary when measured requirements demand it; do not turn future possibilities into present infrastructure.
+
+## Implemented P0.3 strategy boundary
+
+`shadow.strategies` contains one explicit, unvalidated hypothesis: a ready close z-score at or below a fixed entry threshold may propose `long_entry` while supplied non-authoritative lifecycle context is `flat`; a ready z-score at or above its fixed exit threshold may propose `exit` while that context is `holding`. The strategy consumes one immutable `FeatureSnapshot`, immutable typed configuration, supplied decision time, and supplied state, and returns an immutable `Signal` or `None`. Its signal records feature identity/version/window, value and observation/availability times, source dataset identity, configuration identity and material thresholds/freshness allowance, rule reason, decision/availability time, and strategy identity/version.
+
+The strategy fails closed for absent, non-ready, mismatched, future-available, or stale feature evidence. It does not maintain positions, choose a holding horizon, submit orders, size positions, calculate fills, authorize risk, inspect future data, perform I/O, or claim profitability. A simulator in P0.4 must provide lifecycle and holding-elapsed context before any maximum-holding exit can be evaluated.

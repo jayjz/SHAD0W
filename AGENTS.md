@@ -2,7 +2,7 @@
 
 ## Mission and phase
 
-SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2A deterministic feature kernel is complete.** The next authorized milestone is P0.2B strategy-facing indicators and feature composition; do not start it incidentally.
+SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, and P0.3 defines one unvalidated signal-only hypothesis.** The next authorized milestone is P0.4 chronological/event-driven simulation; do not start it incidentally.
 
 ## Source of truth
 
