@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P0.4B complete**
+**Current milestone: P0.4C complete**
 
-**Next milestone: P0.4C — end-to-end chronological simulator**
+**Next milestone: P0.5 — transaction-cost/fill model**
 
 Implemented so far:
 
@@ -69,8 +69,8 @@ Implemented so far:
 | Initial hypothesis             | ✅ Complete       | Deterministic close-z-score mean-reversion signal contract                                            |
 | Timeline semantics             | ✅ Complete       | Deterministic causal event ordering and strict anti-look-ahead execution eligibility                  |
 | Lifecycle semantics            | ✅ Complete       | Per-instrument `flat → pending_entry → holding → pending_exit → flat` state machine                   |
-| Full chronological runner      | 🚧 Next          | Composition of data, features, strategy, timeline, and lifecycle                                      |
-| Fill / cost model              | ⏳ Planned        | Spread, slippage, latency, rejected/unfilled execution                                                |
+| Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, and lifecycle                  |
+| Fill / cost model              | ⏳ Next           | Spread, slippage, latency, rejected/unfilled execution                                                |
 | Evaluation engine              | ⏳ Planned        | Holdouts, walk-forward, stability, ablation, performance evidence                                     |
 | Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
@@ -472,9 +472,9 @@ with:
 
 ---
 
-#### P0.4C — End-to-end chronological simulator 🚧 NEXT
+#### P0.4C — End-to-end chronological simulator ✅
 
-Compose the implemented layers into one deterministic run:
+Implemented as one deterministic, immutable run:
 
 ```text
 market data
@@ -490,11 +490,25 @@ lifecycle
 SimulationResult
 ```
 
-P0.4C will not introduce fill prices, P&L, or transaction-cost modeling.
+The runner uses a validated bar dataset, one mean-reversion configuration per
+instrument, explicit price-free opportunities, and an optional run label. The
+configuration's z-score window is the only required feature configuration.
+It evaluates exactly once per configured instrument/availability instant, using
+the newest snapshot where delayed delivery releases multiple historical records
+together. It supplies P0.4B's earlier `flat`/`holding` state to P0.3 and
+suppresses new action proposals while lifecycle state is pending. The immutable
+result preserves dataset fingerprint/configuration identity, feature snapshots,
+structured decision outcomes, signals, P0.4A eligibility, and P0.4B state.
+
+P0.4C adds no fill prices, P&L, transaction costs, quantity, liquidity, risk
+authorization, or maximum-holding rule. An opportunity remains a structural
+lifecycle event rather than a guaranteed real-world fill; pending/open state
+remains visible at end of stream. Appending future observations is regression-
+tested not to rewrite established historical evidence.
 
 ---
 
-#### P0.5 — Transaction-cost and fill model ⏳
+#### P0.5 — Transaction-cost and fill model ⏳ NEXT
 
 Model economic execution assumptions explicitly:
 

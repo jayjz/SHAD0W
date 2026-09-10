@@ -22,6 +22,15 @@ from shadow.simulation.lifecycle import (
     SimulatedPosition,
     process_lifecycle,
 )
+from shadow.simulation.runner import (
+    SIMULATION_IMPLEMENTATION_VERSION,
+    SimulationContractError,
+    SimulationInput,
+    SimulationResult,
+    StrategyEvaluation,
+    StrategyEvaluationDisposition,
+    run_simulation,
+)
 from shadow.simulation.timeline import (
     EligibilityDecision,
     EligibilityReason,
@@ -51,9 +60,16 @@ __all__ = [
     "TimelineRecord",
     "TimelineResult",
     "SimulatedPosition",
+    "SIMULATION_IMPLEMENTATION_VERSION",
+    "SimulationContractError",
+    "SimulationInput",
+    "SimulationResult",
+    "StrategyEvaluation",
+    "StrategyEvaluationDisposition",
     "feature_available_event",
     "market_observation_available_event",
     "process_timeline",
     "process_lifecycle",
     "signal_available_event",
+    "run_simulation",
 ]

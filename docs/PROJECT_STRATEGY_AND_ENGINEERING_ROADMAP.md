@@ -13,8 +13,8 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 - **P0.3 — minimal mean-reversion baseline: COMPLETE.** One immutable-configured, provider-neutral, signal-only close z-score hypothesis proposes long entry or exit evidence. It is unvalidated and makes no profitability claim; risk remains independent.
 - **P0.4A — chronological event semantics: COMPLETE.** Immutable availability/event evidence, canonical event ordering, and strict later-opportunity eligibility prevent same-bar completed-close execution without creating fills or portfolio state.
 - **P0.4B — authoritative position/order lifecycle: COMPLETE.** Immutable per-instrument `flat`/`pending_entry`/`holding`/`pending_exit` state, deterministic conflict policy, strict P0.4A eligibility composition, unresolved-state reporting, and reconstructable transition evidence exist without prices, quantities, costs, P&L, or broker behavior.
-- **P0.4C — end-to-end chronological simulator: NEXT.** Compose market observations, features, strategy proposals, timeline eligibility, and authoritative lifecycle state into one deterministic chronological simulation run; do not add economic execution modeling incidentally.
-- **P0.5 — transaction-cost/fill model:** evaluate explicit spread, slippage, latency, rejected-fill, and execution-constraint assumptions.
+- **P0.4C — end-to-end chronological simulator: COMPLETE.** One immutable result now composes P0.1 validated bars, P0.2 availability-aware z-score snapshots, P0.3 proposals, P0.4A canonical eligibility, and P0.4B authoritative per-instrument lifecycle state. Decisions occur once per feature availability instant, pending state fails closed, prefix evidence is regression-tested, and no economic execution semantics are claimed.
+- **P0.5 — transaction-cost/fill model: NEXT.** Evaluate explicit spread, slippage, latency, rejected-fill, and execution-constraint assumptions without treating P0.4C opportunities as guaranteed fills.
 
 ## P1 — evaluation
 

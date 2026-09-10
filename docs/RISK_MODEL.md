@@ -8,6 +8,8 @@ P0.3's `Signal` is deliberately only a proposal with reconstructable feature evi
 
 P0.4B's `LifecycleAction` and simulated lifecycle state are likewise not risk authorization or an order. They make the causal state consequence of already-legal strategy evidence explicit for research simulation, with no quantity, price, broker, or economic effect. A future risk component remains the independent authority to authorize or reject any execution intent in a full simulation or operational design.
 
+P0.4C composes the current lifecycle as a deterministic research-simulation baseline only. It does not assert that every P0.3 signal would pass the future risk engine: its temporary admission into the price-free lifecycle is explicitly not production authorization. The runner keeps this seam at signal-to-lifecycle admission and adds no risk policy, sizing, limit, or authorization mechanism.
+
 ## Future control categories
 
 The architecture must accommodate exposure and position limits, maximum-loss constraints, catastrophic stops, stale-data vetoes, volatility controls, concurrent-position limits, session constraints, and portfolio reconciliation. These are architectural categories, not P0.0 parameter choices.

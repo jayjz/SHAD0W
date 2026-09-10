@@ -2,7 +2,7 @@
 
 ## Mission and phase
 
-SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, and P0.4A/P0.4B establish chronological and authoritative lifecycle semantics.** The next authorized milestone is P0.4C end-to-end chronological simulation; do not start it incidentally.
+SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, and P0.4A/P0.4C establish chronological, lifecycle-authoritative simulation semantics.** The next authorized milestone is P0.5 transaction-cost/fill modeling; do not start it incidentally.
 
 ## Source of truth
 
