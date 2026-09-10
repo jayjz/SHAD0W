@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P0.5A complete**
+**Current milestone: P0.5B complete; P0.5 remains incomplete**
 
-**Next milestone: P0.5B — explicit cost/slippage sensitivity**
+**Next proposed slice: quantity/fee evidence contract (specification first; separate authorization required)**
 
 Implemented so far:
 
@@ -71,7 +71,7 @@ Implemented so far:
 | Lifecycle semantics            | ✅ Complete       | Per-instrument state changes only after an explicit successful execution outcome                       |
 | Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, lifecycle, and execution       |
 | Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
-| Cost / slippage model          | ⏳ Next           | One explicit additional cost/slippage assumption and sensitivity evidence                              |
+| Cost / slippage model          | ✅ P0.5B          | Deterministic adverse bps slippage and price-level sensitivity; fees remain absent                              |
 | Evaluation engine              | ⏳ Planned        | Holdouts, walk-forward, stability, ablation, performance evidence                                     |
 | Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
@@ -301,14 +301,14 @@ The current lifecycle models state from explicit deterministic execution evidenc
 
 An eligible opportunity does **not** mean a fill. It creates an attempt only; `unfilled` and `rejected` outcomes leave the action pending. The P0.5A quote model uses only causally available fresh provider-neutral quotes: a long entry buys at ask and an exit sells at bid. A crossed quote is rejected rather than repaired, and no midpoint, close, or later favorable quote is substituted.
 
-P0.5A still does **not** model:
+The current model still does **not** model:
 
 * a quantity;
 * available liquidity;
-* fees or arbitrary slippage;
+* fees, market impact, or partial fills;
 * cash, P&L, return, equity, or performance metrics.
 
-Buying at ask and selling at bid already preserves quoted spread; P0.5A does not subtract a second arbitrary spread charge. Additional cost, slippage, and liquidity assumptions belong to later P0.5 work.
+Buying at ask and selling at bid already preserves quoted spread; P0.5A does not subtract a second arbitrary spread charge. P0.5B applies caller-declared adverse slippage after side selection: BUY = ask × (1 + bps / 10000), SELL = bid × (1 - bps / 10000). Zero preserves the original price exactly. Outcomes retain the quote, baseline price, configuration, and modeled price; sensitivity compares caller scenarios in ascending bps order. Fees and liquidity assumptions remain unresolved.
 
 Duplicate and impossible actions are deterministic and explicit. Open or pending state remains visible at the end of a simulation stream rather than being silently liquidated.
 
@@ -528,11 +528,9 @@ cash, P&L, or metrics.
 
 ---
 
-#### P0.5B — Explicit cost/slippage sensitivity ⏳ NEXT
+#### P0.5B — Deterministic adverse slippage sensitivity ✅
 
-Add one small, stated deterministic cost or slippage assumption to P0.5A outcomes,
-including sensitivity evidence. Do not begin evaluation, sizing, partial-fill,
-market-impact, or broker work in that slice.
+Implemented one explicit Decimal bps assumption, applied after legal quote-side selection, with exact zero compatibility, immutable price decomposition, and monotonic caller-supplied scenarios. Model `shadow.execution.quote_bid_ask.v2` identifies the changed filled-price semantics. See [numeric and evidence contracts](docs/DATA_CONTRACTS.md#p05b-deterministic-adverse-slippage) and [remaining execution limitations](docs/EVALUATION.md). No profitability evaluation occurred; example bps are not empirical estimates.
 
 ---
 

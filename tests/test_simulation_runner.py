@@ -321,43 +321,58 @@ def test_future_extension_preserves_historical_simulation_evidence() -> None:
     assert expanded.lifecycle.state_for(SPY).state is LifecycleState.HOLDING
 
 
-def test_future_quote_cannot_rewrite_completed_execution_outcome_end_to_end() -> None:
+@pytest.mark.parametrize("bps", [Decimal(0), Decimal(10)])
+def test_future_quote_cannot_rewrite_completed_execution_outcome_end_to_end(bps: Decimal) -> None:
     prefix_bars = (_bar(SPY, "10", 0), _bar(SPY, "9", 1))
     first_opportunity = _opportunity(
         "entry-opportunity", SPY, prefix_bars[-1].availability_time + timedelta(microseconds=1)
     )
     prefix = run_simulation(
-        _input(prefix_bars, opportunities=(first_opportunity,), quotes=(_quote(),))
-    )
-
-    future_bar = _bar(SPY, "8", 2)
-    future_quote_time = future_bar.availability_time
-    expanded = run_simulation(
-        _input(
-            (*prefix_bars, future_bar),
-            opportunities=(
-                first_opportunity,
-                _opportunity("future-opportunity", SPY, future_quote_time),
-            ),
-            quotes=(
-                _quote(),
-                _quote(
-                    bid="100",
-                    ask="100.5",
-                    observation_time=future_quote_time,
-                    availability_time=future_quote_time,
-                ),
-            ),
+        replace(
+            _input(prefix_bars, opportunities=(first_opportunity,), quotes=(_quote(),)),
+            execution_config=replace(EXECUTION_CONFIG, slippage_bps=bps),
         )
     )
 
-    assert prefix.execution_outcomes[0].execution_price == Decimal("101")
+    future_bar = _bar(SPY, "10", 2)
+    future_quote_time = future_bar.availability_time
+    expanded = run_simulation(
+        replace(
+            _input(
+                (*prefix_bars, future_bar),
+                opportunities=(
+                    first_opportunity,
+                    _opportunity("future-opportunity", SPY, future_quote_time),
+                ),
+                quotes=(
+                    _quote(),
+                    _quote(
+                        bid="100",
+                        ask="100.5",
+                        observation_time=future_quote_time,
+                        availability_time=future_quote_time,
+                    ),
+                ),
+            ),
+            execution_config=replace(EXECUTION_CONFIG, slippage_bps=bps),
+        )
+    )
+
+    assert prefix.execution_outcomes[0].execution_price == (
+        Decimal("101") if bps == 0 else Decimal("101.101")
+    )
     assert (
         expanded.execution_attempts[: len(prefix.execution_attempts)] == prefix.execution_attempts
     )
     assert (
         expanded.execution_outcomes[: len(prefix.execution_outcomes)] == prefix.execution_outcomes
     )
+
+    assert len(expanded.signals) > len(prefix.signals)
+    assert expanded.signals[: len(prefix.signals)] == prefix.signals
+    assert expanded.lifecycle.records[: len(prefix.lifecycle.records)] == prefix.lifecycle.records
+    assert prefix.execution_outcomes[0].baseline_execution_price == Decimal("101")
+    assert prefix.execution_outcomes[0].execution_config == prefix.execution_config
 
 
 def test_end_of_stream_retains_pending_entry_holding_and_pending_exit() -> None:

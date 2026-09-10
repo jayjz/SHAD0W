@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from enum import StrEnum
 
 from shadow.domain import Instrument, Quote, QuoteMarketState
 
-EXECUTION_MODEL_ID = "shadow.execution.quote_bid_ask.v1"
+EXECUTION_MODEL_ID = "shadow.execution.quote_bid_ask.v2"
 
 
 class ExecutionContractError(ValueError):
@@ -43,7 +52,9 @@ class ExecutionReason(StrEnum):
     """Machine-readable explanation for an execution outcome."""
 
     FILLED_AT_QUOTE = "filled_at_quote"
+    FILLED_WITH_SLIPPAGE = "filled_with_slippage"
     NO_LEGAL_QUOTE = "no_legal_quote"
+    # Retained for historical v1 evidence; v2 never inspects future quotes for a reason.
     QUOTE_NOT_YET_AVAILABLE = "quote_not_yet_available"
     STALE_QUOTE = "stale_quote"
     CROSSED_QUOTE = "crossed_quote"
@@ -102,16 +113,55 @@ def quote_reference(quote: Quote) -> str:
             quote.instrument.identifier,
             quote.observation_time.isoformat(),
             quote.availability_time.isoformat(),
-            quote.bid_price.to_eng_string(),
-            quote.ask_price.to_eng_string(),
-            "" if quote.bid_size is None else quote.bid_size.to_eng_string(),
-            "" if quote.ask_size is None else quote.ask_size.to_eng_string(),
+            quote.bid_price.to_eng_string(context=Context(capitals=1)),
+            quote.ask_price.to_eng_string(context=Context(capitals=1)),
+            ""
+            if quote.bid_size is None
+            else quote.bid_size.to_eng_string(context=Context(capitals=1)),
+            ""
+            if quote.ask_size is None
+            else quote.ask_size.to_eng_string(context=Context(capitals=1)),
             quote.availability_semantics.value,
             provenance.source,
             provenance.source_timezone or "",
             provenance.session or "",
         )
     )
+
+
+def _validate_slippage(value: Decimal) -> None:
+    if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
+        raise ExecutionContractError("slippage_bps must be a finite nonnegative Decimal")
+
+
+def _modeled_price(baseline: Decimal, side: ExecutionSide, bps: Decimal) -> Decimal:
+    # Preserve even the original Decimal representation at zero.
+    if bps == 0:
+        return baseline
+    if baseline < 0:
+        raise ExecutionContractError("nonzero slippage requires a nonnegative executable price")
+    try:
+        # Explicit context including exponent limits and traps; caller state is irrelevant.
+        with localcontext(
+            Context(
+                prec=34,
+                rounding=ROUND_HALF_EVEN,
+                Emin=-999999,
+                Emax=999999,
+                capitals=1,
+                clamp=0,
+                traps=[InvalidOperation, DivisionByZero, Overflow],
+            )
+        ):
+            fraction = bps / Decimal(10000)
+            factor = Decimal(1) + fraction if side is ExecutionSide.BUY else Decimal(1) - fraction
+            price = baseline * factor
+        # Rounding a >34-digit baseline must never create favorable execution.
+        return max(baseline, price) if side is ExecutionSide.BUY else min(baseline, price)
+    except DecimalException as exc:
+        raise ExecutionContractError(
+            "slippage calculation exceeds the Decimal numeric domain"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,8 +174,21 @@ class QuoteExecutionConfig:
 
     maximum_quote_age: timedelta
     execution_model_id: str = EXECUTION_MODEL_ID
+    slippage_bps: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
+        _validate_slippage(self.slippage_bps)
+        # Canonicalize without arithmetic or caller-context rounding.
+        sign, digits, exponent = self.slippage_bps.as_tuple()
+        assert isinstance(exponent, int)  # finite input validated above
+        if self.slippage_bps == 0:
+            canonical_bps = Decimal(0)
+        else:
+            while len(digits) > 1 and digits[-1] == 0:
+                digits = digits[:-1]
+                exponent += 1
+            canonical_bps = Decimal((sign, digits, exponent))
+        object.__setattr__(self, "slippage_bps", canonical_bps)
         if not isinstance(self.maximum_quote_age, timedelta):
             raise ExecutionContractError("maximum_quote_age must be a timedelta")
         if self.maximum_quote_age < timedelta(0):
@@ -209,8 +272,11 @@ class ExecutionOutcome:
     reason: ExecutionReason
     market_evidence: Quote | None
     execution_price: Decimal | None
+    execution_config: QuoteExecutionConfig
 
     def __post_init__(self) -> None:
+        if not isinstance(self.execution_config, QuoteExecutionConfig):
+            raise ExecutionContractError("execution_config must be a QuoteExecutionConfig")
         if not isinstance(self.attempt, ExecutionAttempt):
             raise ExecutionContractError("attempt must be an ExecutionAttempt")
         if not isinstance(self.status, ExecutionStatus):
@@ -233,7 +299,12 @@ class ExecutionOutcome:
 
         if self.status is ExecutionStatus.FILLED:
             if (
-                self.reason is not ExecutionReason.FILLED_AT_QUOTE
+                self.reason
+                is not (
+                    ExecutionReason.FILLED_AT_QUOTE
+                    if self.execution_config.slippage_bps == 0
+                    else ExecutionReason.FILLED_WITH_SLIPPAGE
+                )
                 or self.market_evidence is None
                 or self.execution_price is None
             ):
@@ -247,15 +318,30 @@ class ExecutionOutcome:
                 if self.attempt.execution_side is ExecutionSide.BUY
                 else self.market_evidence.bid_price
             )
+            expected_price = _modeled_price(
+                expected_price, self.attempt.execution_side, self.execution_config.slippage_bps
+            )
             if self.execution_price != expected_price:
                 raise ExecutionContractError(
-                    "filled outcome execution_price must match the executable quote side"
+                    "filled outcome execution_price must match "
+                    "the configured adverse quote-side price"
                 )
         elif self.status is ExecutionStatus.UNFILLED:
             if self.reason not in _UNFILLED_REASONS or self.execution_price is not None:
                 raise ExecutionContractError("unfilled outcome has incompatible reason or price")
         elif self.reason not in _REJECTED_REASONS or self.execution_price is not None:
             raise ExecutionContractError("rejected outcome has incompatible reason or price")
+
+    @property
+    def baseline_execution_price(self) -> Decimal | None:
+        """Executable quote side before slippage, only for a valid fill."""
+        if self.status is not ExecutionStatus.FILLED or self.market_evidence is None:
+            return None
+        return (
+            self.market_evidence.ask_price
+            if self.attempt.execution_side is ExecutionSide.BUY
+            else self.market_evidence.bid_price
+        )
 
     @property
     def market_evidence_reference(self) -> str | None:
@@ -274,6 +360,7 @@ def _outcome(
     attempt: ExecutionAttempt,
     status: ExecutionStatus,
     reason: ExecutionReason,
+    config: QuoteExecutionConfig,
     *,
     market_evidence: Quote | None = None,
     execution_price: Decimal | None = None,
@@ -284,6 +371,7 @@ def _outcome(
         reason=reason,
         market_evidence=market_evidence,
         execution_price=execution_price,
+        execution_config=config,
     )
 
 
@@ -322,7 +410,7 @@ def resolve_execution_attempt(
 
     rejection = _attempt_rejection(attempt, config)
     if rejection is not None:
-        return _outcome(attempt, ExecutionStatus.REJECTED, rejection)
+        return _outcome(attempt, ExecutionStatus.REJECTED, rejection, config)
 
     matching_quotes = tuple(
         quote for quote in materialized_quotes if quote.instrument == attempt.instrument
@@ -331,12 +419,8 @@ def resolve_execution_attempt(
         quote for quote in matching_quotes if quote.availability_time <= attempt.attempt_time
     )
     if not legal_quotes:
-        reason = (
-            ExecutionReason.QUOTE_NOT_YET_AVAILABLE
-            if any(quote.availability_time > attempt.attempt_time for quote in matching_quotes)
-            else ExecutionReason.NO_LEGAL_QUOTE
-        )
-        return _outcome(attempt, ExecutionStatus.UNFILLED, reason)
+        # Future evidence cannot refine a historical diagnostic on a rerun.
+        return _outcome(attempt, ExecutionStatus.UNFILLED, ExecutionReason.NO_LEGAL_QUOTE, config)
 
     selected = max(legal_quotes, key=_quote_sort_key)
     if selected.market_state is QuoteMarketState.CROSSED:
@@ -344,6 +428,7 @@ def resolve_execution_attempt(
             attempt,
             ExecutionStatus.REJECTED,
             ExecutionReason.CROSSED_QUOTE,
+            config,
             market_evidence=selected,
         )
     if attempt.attempt_time - selected.observation_time > config.maximum_quote_age:
@@ -351,6 +436,7 @@ def resolve_execution_attempt(
             attempt,
             ExecutionStatus.UNFILLED,
             ExecutionReason.STALE_QUOTE,
+            config,
             market_evidence=selected,
         )
 
@@ -360,9 +446,16 @@ def resolve_execution_attempt(
     return _outcome(
         attempt,
         ExecutionStatus.FILLED,
-        ExecutionReason.FILLED_AT_QUOTE,
+        (
+            ExecutionReason.FILLED_AT_QUOTE
+            if config.slippage_bps == 0
+            else ExecutionReason.FILLED_WITH_SLIPPAGE
+        ),
+        config,
         market_evidence=selected,
-        execution_price=execution_price,
+        execution_price=_modeled_price(
+            execution_price, attempt.execution_side, config.slippage_bps
+        ),
     )
 
 
@@ -391,8 +484,30 @@ def resolve_execution_attempts(
                     attempt,
                     ExecutionStatus.REJECTED,
                     ExecutionReason.DUPLICATE_ATTEMPT_ID,
+                    config,
                 )
             )
         else:
             outcomes.append(resolve_execution_attempt(attempt, materialized_quotes, config))
     return tuple(outcomes)
+
+
+def execution_sensitivity(
+    attempt: ExecutionAttempt,
+    quotes: Iterable[Quote],
+    config: QuoteExecutionConfig,
+    slippage_scenarios: Iterable[Decimal],
+) -> tuple[ExecutionOutcome, ...]:
+    """Resolve caller scenarios in ascending bps order, preserving duplicates.
+
+    Each outcome retains the same attempt and its own immutable configuration.
+    No baseline scenario is inserted and no scenario is recommended or optimized.
+    """
+    scenarios = tuple(slippage_scenarios)
+    for bps in scenarios:
+        _validate_slippage(bps)
+    materialized_quotes = tuple(quotes)
+    return tuple(
+        resolve_execution_attempt(attempt, materialized_quotes, replace(config, slippage_bps=bps))
+        for bps in sorted(scenarios)
+    )

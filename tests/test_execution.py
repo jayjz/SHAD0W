@@ -166,7 +166,7 @@ def test_delayed_quote_cannot_travel_back_in_time() -> None:
     outcome = resolve_execution_attempt(attempt, (delayed,), CONFIG)
 
     assert outcome.status is ExecutionStatus.UNFILLED
-    assert outcome.reason is ExecutionReason.QUOTE_NOT_YET_AVAILABLE
+    assert outcome.reason is ExecutionReason.NO_LEGAL_QUOTE
     assert outcome.market_evidence is None
 
 
@@ -281,7 +281,7 @@ def test_pending_action_can_fill_at_a_later_legal_opportunity() -> None:
         ExecutionStatus.UNFILLED,
         ExecutionStatus.FILLED,
     ]
-    assert result.execution_outcomes[0].reason is ExecutionReason.QUOTE_NOT_YET_AVAILABLE
+    assert result.execution_outcomes[0].reason is ExecutionReason.NO_LEGAL_QUOTE
     assert result.state_for(SPY).state is LifecycleState.HOLDING
 
 
