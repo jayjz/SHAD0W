@@ -3,8 +3,9 @@
 The runner advances strategy decisions by configured feature-availability
 instants.  It intentionally delegates feature calculation, strategy rules,
 timeline eligibility, and lifecycle transitions to their existing components.
-An execution opportunity remains a chronological permission; the P0.5A quote
+An execution opportunity remains a chronological permission; the P0.5A/P0.5B
 model supplies the separate explicit outcome that may change lifecycle state.
+P0.5C economics is attached only after that authoritative outcome is resolved.
 """
 
 from __future__ import annotations
@@ -16,9 +17,12 @@ from enum import StrEnum
 from shadow.data import dataset_fingerprint, validate_bars
 from shadow.domain import Bar, DatasetMetadata, Instrument, Quote, ValidationStatus
 from shadow.execution import (
+    EconomicExecution,
     ExecutionAttempt,
+    ExecutionEconomicsConfig,
     ExecutionOutcome,
     QuoteExecutionConfig,
+    attach_execution_economics,
     quote_reference,
 )
 from shadow.features import (
@@ -47,11 +51,11 @@ from shadow.strategies import (
     evaluate_mean_reversion,
 )
 
-SIMULATION_IMPLEMENTATION_VERSION = "shadow.simulation.runner.v2"
+SIMULATION_IMPLEMENTATION_VERSION = "shadow.simulation.runner.v3"
 
 
 class SimulationContractError(ValueError):
-    """An invalid P0.4C runner input or inconsistent runner evidence."""
+    """An invalid simulation runner input or inconsistent runner evidence."""
 
 
 class StrategyEvaluationDisposition(StrEnum):
@@ -71,7 +75,9 @@ class SimulationInput:
     chronology.  A mean-reversion configuration supplies the corresponding
     z-score feature window and identity; there is deliberately no separate
     universal feature configuration.  At most one configuration is accepted
-    for an instrument because P0.4B owns one lifecycle per instrument.
+    for an instrument because P0.4B owns one lifecycle per instrument. Optional
+    economics configs are exact-coverage downstream assumptions and are placed
+    last to preserve the existing positional price-only construction contract.
     """
 
     dataset_metadata: DatasetMetadata
@@ -81,6 +87,7 @@ class SimulationInput:
     quotes: tuple[Quote, ...] = ()
     execution_opportunities: tuple[ExecutionOpportunity, ...] = ()
     simulation_id: str | None = None
+    economics_configs: tuple[ExecutionEconomicsConfig, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.dataset_metadata, DatasetMetadata):
@@ -111,6 +118,50 @@ class SimulationInput:
         if any(instrument not in self.dataset_metadata.instruments for instrument in instruments):
             raise SimulationContractError(
                 "strategy configuration instrument is absent from dataset scope"
+            )
+        if self.economics_configs is not None:
+            if not isinstance(self.economics_configs, tuple) or not all(
+                isinstance(config, ExecutionEconomicsConfig) for config in self.economics_configs
+            ):
+                raise SimulationContractError(
+                    "economics_configs must be a tuple of ExecutionEconomicsConfig values or None"
+                )
+            economics_instruments = [config.instrument for config in self.economics_configs]
+            if len(economics_instruments) != len(set(economics_instruments)):
+                raise SimulationContractError(
+                    "economics_configs must contain exactly one per configured instrument; "
+                    "duplicates are not allowed"
+                )
+            configured_instruments = set(instruments)
+            supplied_instruments = set(economics_instruments)
+            if supplied_instruments != configured_instruments:
+                missing = sorted(
+                    instrument.identifier
+                    for instrument in configured_instruments - supplied_instruments
+                )
+                extra = sorted(
+                    instrument.identifier
+                    for instrument in supplied_instruments - configured_instruments
+                )
+                details = []
+                if missing:
+                    details.append(f"missing={missing!r}")
+                if extra:
+                    details.append(f"extra={extra!r}")
+                raise SimulationContractError(
+                    "economics_configs must cover configured instruments exactly ("
+                    + ", ".join(details)
+                    + ")"
+                )
+            object.__setattr__(
+                self,
+                "economics_configs",
+                tuple(
+                    sorted(
+                        self.economics_configs,
+                        key=lambda config: config.instrument.identifier,
+                    )
+                ),
             )
         if self.simulation_id is not None and (
             not self.simulation_id or self.simulation_id != self.simulation_id.strip()
@@ -161,7 +212,7 @@ class StrategyEvaluation:
 
 @dataclass(frozen=True, slots=True)
 class SimulationResult:
-    """Immutable chronological and deterministic-execution evidence from one run."""
+    """Immutable chronological, execution, and optional economics evidence."""
 
     simulation_implementation_version: str
     simulation_id: str | None
@@ -178,6 +229,8 @@ class SimulationResult:
     lifecycle: LifecycleResult
     execution_attempts: tuple[ExecutionAttempt, ...]
     execution_outcomes: tuple[ExecutionOutcome, ...]
+    economics_configs: tuple[ExecutionEconomicsConfig, ...] | None = None
+    economic_executions: tuple[EconomicExecution, ...] = ()
 
 
 def _time_token(value: datetime) -> str:
@@ -294,7 +347,7 @@ def _position_state(lifecycle_state: LifecycleState) -> PositionState | None:
 
 
 def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
-    """Run the current hypothesis through P0.1--P0.5A deterministic execution.
+    """Run the current hypothesis through P0.1--P0.5C deterministic evidence.
 
     The explicit decision rule is one strategy evaluation per configured
     instrument/availability instant, using that instant's newest available z-score
@@ -421,6 +474,19 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
         execution_config=simulation_input.execution_config,
         quotes=canonical_quotes,
     )
+    economic_executions: tuple[EconomicExecution, ...] = ()
+    if simulation_input.economics_configs is not None:
+        economics_by_instrument = {
+            config.instrument: config for config in simulation_input.economics_configs
+        }
+        attached = (
+            attach_execution_economics(
+                outcome,
+                economics_by_instrument[outcome.attempt.instrument],
+            )
+            for outcome in lifecycle.execution_outcomes
+        )
+        economic_executions = tuple(evidence for evidence in attached if evidence is not None)
     return SimulationResult(
         simulation_implementation_version=SIMULATION_IMPLEMENTATION_VERSION,
         simulation_id=simulation_input.simulation_id,
@@ -439,4 +505,6 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
         lifecycle=lifecycle,
         execution_attempts=lifecycle.execution_attempts,
         execution_outcomes=lifecycle.execution_outcomes,
+        economics_configs=simulation_input.economics_configs,
+        economic_executions=economic_executions,
     )

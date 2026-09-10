@@ -2,7 +2,7 @@
 
 ## Mission and phase
 
-SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, P0.4A/P0.4C establish chronological and lifecycle-authoritative simulation semantics, P0.5A establishes explicit deterministic quote-side execution outcomes, and P0.5B adds deterministic adverse slippage and price-level sensitivity evidence.** P0.5 remains incomplete. The next proposed slice is a quantity/fee evidence contract, specification first; it requires separate authorization.
+SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, P0.4A/P0.4C establish chronological and lifecycle-authoritative simulation semantics, P0.5A establishes explicit deterministic quote-side execution outcomes, P0.5B adds deterministic adverse slippage and price-level sensitivity evidence, and P0.5C attaches fixed declared quantity and proportional fee evidence to filled outcomes.** P0.5 is complete only under the bounded definition of quote-side executable pricing, deterministic slippage, fixed declared quantity, and proportional fee evidence; it is not complete market microstructure realism. The next proposed slice is P1A: trade reconstruction and the first historical-evaluation foundation. It requires separate authorization.
 
 ## Source of truth
 

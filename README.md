@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P0.5B complete; P0.5 remains incomplete**
+**Current milestone: bounded P0.5 execution economics complete**
 
-**Next proposed slice: quantity/fee evidence contract (specification first; separate authorization required)**
+**Next proposed slice: P1A trade reconstruction and first historical-evaluation foundation**
 
 Implemented so far:
 
@@ -71,7 +71,7 @@ Implemented so far:
 | Lifecycle semantics            | ✅ Complete       | Per-instrument state changes only after an explicit successful execution outcome                       |
 | Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, lifecycle, and execution       |
 | Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
-| Cost / slippage model          | ✅ P0.5B          | Deterministic adverse bps slippage and price-level sensitivity; fees remain absent                              |
+| Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
 | Evaluation engine              | ⏳ Planned        | Holdouts, walk-forward, stability, ablation, performance evidence                                     |
 | Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
@@ -297,18 +297,19 @@ stateDiagram-v2
     PendingExit --> Flat: legal opportunity + FILLED outcome
 ```
 
-The current lifecycle models state from explicit deterministic execution evidence, not economics.
+The current lifecycle models state from explicit deterministic execution evidence. P0.5C economics remains downstream and cannot affect that state.
 
 An eligible opportunity does **not** mean a fill. It creates an attempt only; `unfilled` and `rejected` outcomes leave the action pending. The P0.5A quote model uses only causally available fresh provider-neutral quotes: a long entry buys at ask and an exit sells at bid. A crossed quote is rejected rather than repaired, and no midpoint, close, or later favorable quote is substituted.
 
-The current model still does **not** model:
+Lifecycle and fill eligibility still do **not** model:
 
-* a quantity;
 * available liquidity;
-* fees, market impact, or partial fills;
+* market impact or partial fills;
 * cash, P&L, return, equity, or performance metrics.
 
-Buying at ask and selling at bid already preserves quoted spread; P0.5A does not subtract a second arbitrary spread charge. P0.5B applies caller-declared adverse slippage after side selection: BUY = ask × (1 + bps / 10000), SELL = bid × (1 - bps / 10000). Zero preserves the original price exactly. Outcomes retain the quote, baseline price, configuration, and modeled price; sensitivity compares caller scenarios in ascending bps order. Fees and liquidity assumptions remain unresolved.
+Buying at ask and selling at bid already preserves quoted spread; P0.5A does not subtract a second arbitrary spread charge. P0.5B applies caller-declared adverse slippage after side selection: BUY = ask × (1 + bps / 10000), SELL = bid × (1 - bps / 10000). Zero preserves the original price exactly. Outcomes retain the quote, baseline price, configuration, and modeled price; sensitivity compares caller scenarios in ascending bps order.
+
+P0.5C then attaches one fixed caller-declared quantity per instrument and one explicit synthetic fee in basis points of absolute final executed notional. It derives a cash-flow value for that individual fill only. Quantity is not strategy or risk sizing, quote currency is a research denomination without FX semantics, and fractional units do not imply broker support. Unfilled/rejected outcomes incur no execution fee. No spread or slippage is charged a second time.
 
 Duplicate and impossible actions are deterministic and explicit. Open or pending state remains visible at the end of a simulation stream rather than being silently liquidated.
 
@@ -534,9 +535,17 @@ Implemented one explicit Decimal bps assumption, applied after legal quote-side 
 
 ---
 
+#### P0.5C — Fixed quantity and fee economics ✅
+
+Implemented a separate immutable economics boundary identified by `shadow.execution.fixed_quantity_fee_bps.v1`. Each configured instrument declares one fixed positive Decimal quantity, quote-currency denomination, and explicit nonnegative synthetic fee in bps. Exactly one `EconomicExecution` is attached to each filled outcome using its final slipped price; unfilled and rejected outcomes produce none. The evidence includes gross notional, fee, and an individual execution cash flow without adding strategy/risk sizing, liquidity, cash/portfolio state, P&L, or `TradeRecord`.
+
+P0.5 is complete under the bounded definition of quote-side executable pricing, deterministic adverse slippage, fixed declared quantity, and proportional fee evidence. This does not establish complete market microstructure realism or a broker fee schedule.
+
+---
+
 ### P1 — Evaluation ⏳
 
-Build the evidence needed to determine whether the hypothesis survives scrutiny:
+P1A is next: reconstruct entry/exit executions into trades and establish the first historical-evaluation foundation. Later P1 work will build the evidence needed to determine whether the hypothesis survives scrutiny:
 
 * development / validation / final-holdout separation;
 * chronological walk-forward analysis;

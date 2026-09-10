@@ -426,7 +426,7 @@ def test_runner_requires_declared_validated_data_and_preserves_p01_order_failure
         run_simulation(_input((bars[1], bars[0])))
 
 
-def test_result_retains_structured_evidence_without_economic_artifacts() -> None:
+def test_result_retains_structured_evidence_without_portfolio_artifacts() -> None:
     result = run_simulation(_input((_bar(SPY, "10", 0), _bar(SPY, "9", 1))))
 
     assert result.dataset_fingerprint
@@ -439,7 +439,11 @@ def test_result_retains_structured_evidence_without_economic_artifacts() -> None
         "fill_price",
         "commission",
         "cash",
+        "cash_balance",
+        "trade_records",
         "pnl",
+        "realized_pnl",
+        "unrealized_pnl",
         "return",
         "equity_curve",
         "sharpe",
