@@ -3,8 +3,8 @@
 The runner advances strategy decisions by configured feature-availability
 instants.  It intentionally delegates feature calculation, strategy rules,
 timeline eligibility, and lifecycle transitions to their existing components.
-An execution opportunity remains a price-free structural event, not a fill
-claim.
+An execution opportunity remains a chronological permission; the P0.5A quote
+model supplies the separate explicit outcome that may change lifecycle state.
 """
 
 from __future__ import annotations
@@ -14,7 +14,13 @@ from datetime import datetime
 from enum import StrEnum
 
 from shadow.data import dataset_fingerprint, validate_bars
-from shadow.domain import Bar, DatasetMetadata, Instrument, ValidationStatus
+from shadow.domain import Bar, DatasetMetadata, Instrument, Quote, ValidationStatus
+from shadow.execution import (
+    ExecutionAttempt,
+    ExecutionOutcome,
+    QuoteExecutionConfig,
+    quote_reference,
+)
 from shadow.features import (
     FEATURE_IMPLEMENTATION_VERSION,
     FeatureSnapshot,
@@ -41,7 +47,7 @@ from shadow.strategies import (
     evaluate_mean_reversion,
 )
 
-SIMULATION_IMPLEMENTATION_VERSION = "shadow.simulation.runner.v1"
+SIMULATION_IMPLEMENTATION_VERSION = "shadow.simulation.runner.v2"
 
 
 class SimulationContractError(ValueError):
@@ -71,6 +77,8 @@ class SimulationInput:
     dataset_metadata: DatasetMetadata
     bars: tuple[Bar, ...]
     strategy_configs: tuple[MeanReversionConfig, ...]
+    execution_config: QuoteExecutionConfig
+    quotes: tuple[Quote, ...] = ()
     execution_opportunities: tuple[ExecutionOpportunity, ...] = ()
     simulation_id: str | None = None
 
@@ -80,6 +88,7 @@ class SimulationInput:
         for field_name, value, expected_type in (
             ("bars", self.bars, Bar),
             ("strategy_configs", self.strategy_configs, MeanReversionConfig),
+            ("quotes", self.quotes, Quote),
             ("execution_opportunities", self.execution_opportunities, ExecutionOpportunity),
         ):
             if not isinstance(value, tuple) or not all(
@@ -88,6 +97,8 @@ class SimulationInput:
                 raise SimulationContractError(
                     f"{field_name} must be a tuple of {expected_type.__name__} values"
                 )
+        if not isinstance(self.execution_config, QuoteExecutionConfig):
+            raise SimulationContractError("execution_config must be a QuoteExecutionConfig")
         if not self.strategy_configs:
             raise SimulationContractError(
                 "strategy_configs must contain at least one configuration"
@@ -150,19 +161,23 @@ class StrategyEvaluation:
 
 @dataclass(frozen=True, slots=True)
 class SimulationResult:
-    """Immutable, price-free evidence from one chronological simulation run."""
+    """Immutable chronological and deterministic-execution evidence from one run."""
 
     simulation_implementation_version: str
     simulation_id: str | None
     dataset_metadata: DatasetMetadata
     dataset_fingerprint: str
     strategy_configs: tuple[MeanReversionConfig, ...]
+    execution_config: QuoteExecutionConfig
+    quotes: tuple[Quote, ...]
     feature_implementation_version: str
     features: tuple[FeatureSnapshot, ...]
     evaluations: tuple[StrategyEvaluation, ...]
     signals: tuple[Signal, ...]
     timeline: TimelineResult
     lifecycle: LifecycleResult
+    execution_attempts: tuple[ExecutionAttempt, ...]
+    execution_outcomes: tuple[ExecutionOutcome, ...]
 
 
 def _time_token(value: datetime) -> str:
@@ -248,6 +263,8 @@ def _state_before_decision(
     *,
     decision_time: datetime,
     instrument: Instrument,
+    execution_config: QuoteExecutionConfig,
+    quotes: tuple[Quote, ...],
 ) -> LifecycleState:
     """Return P0.4B state immediately before a feature-time strategy decision.
 
@@ -261,7 +278,11 @@ def _state_before_decision(
         *(event for event in signal_events if event.effective_time < decision_time),
         *(event for event in opportunity_events if event.effective_time < decision_time),
     )
-    return process_lifecycle(prior_events).state_for(instrument).state
+    return (
+        process_lifecycle(prior_events, execution_config=execution_config, quotes=quotes)
+        .state_for(instrument)
+        .state
+    )
 
 
 def _position_state(lifecycle_state: LifecycleState) -> PositionState | None:
@@ -273,7 +294,7 @@ def _position_state(lifecycle_state: LifecycleState) -> PositionState | None:
 
 
 def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
-    """Run the current price-free hypothesis through P0.1--P0.4B chronology.
+    """Run the current hypothesis through P0.1--P0.5A deterministic execution.
 
     The explicit decision rule is one strategy evaluation per configured
     instrument/availability instant, using that instant's newest available z-score
@@ -292,6 +313,16 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
 
     canonical_configs = tuple(
         sorted(simulation_input.strategy_configs, key=lambda config: config.instrument.identifier)
+    )
+    canonical_quotes = tuple(
+        sorted(
+            simulation_input.quotes,
+            key=lambda quote: (
+                quote.availability_time,
+                quote.observation_time,
+                quote_reference(quote),
+            ),
+        )
     )
     config_by_instrument = {config.instrument: config for config in canonical_configs}
     features = _configured_features(simulation_input)
@@ -317,6 +348,8 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
             opportunity_events,
             decision_time=snapshot.availability_time,
             instrument=snapshot.instrument,
+            execution_config=simulation_input.execution_config,
+            quotes=canonical_quotes,
         )
         if snapshot.state is not FeatureState.READY:
             evaluations.append(
@@ -383,7 +416,11 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
 
     all_events = (*market_events, *feature_events, *signal_events, *opportunity_events)
     timeline = process_timeline(all_events)
-    lifecycle = process_lifecycle(all_events)
+    lifecycle = process_lifecycle(
+        all_events,
+        execution_config=simulation_input.execution_config,
+        quotes=canonical_quotes,
+    )
     return SimulationResult(
         simulation_implementation_version=SIMULATION_IMPLEMENTATION_VERSION,
         simulation_id=simulation_input.simulation_id,
@@ -392,10 +429,14 @@ def run_simulation(simulation_input: SimulationInput) -> SimulationResult:
             simulation_input.bars, simulation_input.dataset_metadata
         ),
         strategy_configs=canonical_configs,
+        execution_config=simulation_input.execution_config,
+        quotes=canonical_quotes,
         feature_implementation_version=FEATURE_IMPLEMENTATION_VERSION,
         features=features,
         evaluations=tuple(evaluations),
         signals=tuple(event.signal for event in signal_events if event.signal is not None),
         timeline=timeline,
         lifecycle=lifecycle,
+        execution_attempts=lifecycle.execution_attempts,
+        execution_outcomes=lifecycle.execution_outcomes,
     )

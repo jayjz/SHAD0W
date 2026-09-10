@@ -131,7 +131,7 @@ def test_completed_bar_signal_cannot_use_the_same_bar_close_opportunity() -> Non
     assert result.pending_actions[0].signal_reference == "signal-bar-n"
 
 
-def test_first_strictly_later_opportunity_is_the_earliest_legal_one() -> None:
+def test_strictly_later_opportunities_remain_legal_without_claiming_a_fill() -> None:
     signal = _signal()
     result = process_timeline(
         [
@@ -147,11 +147,14 @@ def test_first_strictly_later_opportunity_is_the_earliest_legal_one() -> None:
         for record in _decisions(result)
         if record.eligibility_decision is EligibilityDecision.ELIGIBLE
     ]
-    assert len(eligible) == 1
-    assert eligible[0].execution_event_reference == "bar-n-plus-one"
-    assert eligible[0].execution_event_time == TIME + timedelta(microseconds=1)
-    assert eligible[0].reason is EligibilityReason.EARLIEST_LEGAL_OPPORTUNITY
-    assert result.pending_actions == ()
+    assert [record.execution_event_reference for record in eligible] == [
+        "bar-n-plus-one",
+        "bar-n-plus-two",
+    ]
+    assert all(
+        record.reason is EligibilityReason.LEGAL_EXECUTION_OPPORTUNITY for record in eligible
+    )
+    assert result.pending_actions[0].signal_reference == "signal-bar-n"
 
 
 def test_delayed_market_availability_cannot_be_replaced_by_observation_time() -> None:

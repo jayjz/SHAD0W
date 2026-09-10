@@ -16,8 +16,10 @@ from shadow.domain import (
     Instrument,
     MarketDataValidationError,
     Provenance,
+    Quote,
     ValidationStatus,
 )
+from shadow.execution import QuoteExecutionConfig
 from shadow.features import FeatureState
 from shadow.simulation import (
     ExecutionOpportunity,
@@ -36,6 +38,7 @@ START = datetime(2024, 1, 2, 14, 30, tzinfo=UTC)
 INTERVAL = BarInterval(timedelta(minutes=1))
 SPY = Instrument("SPY")
 QQQ = Instrument("QQQ")
+EXECUTION_CONFIG = QuoteExecutionConfig(maximum_quote_age=timedelta(days=1))
 
 
 def _bar(
@@ -95,16 +98,40 @@ def _opportunity(
     )
 
 
+def _quote(
+    instrument: Instrument = SPY,
+    *,
+    bid: str = "99",
+    ask: str = "101",
+    observation_time: datetime = START,
+    availability_time: datetime = START,
+) -> Quote:
+    return Quote(
+        instrument=instrument,
+        bid_price=Decimal(bid),
+        ask_price=Decimal(ask),
+        bid_size=None,
+        ask_size=None,
+        observation_time=observation_time,
+        availability_time=availability_time,
+        availability_semantics=AvailabilitySemantics.MODELED,
+        provenance=Provenance("synthetic"),
+    )
+
+
 def _input(
     bars: tuple[Bar, ...],
     *,
     configs: tuple[MeanReversionConfig, ...] = (_config(SPY),),
+    quotes: tuple[Quote, ...] = (_quote(),),
     opportunities: tuple[ExecutionOpportunity, ...] = (),
 ) -> SimulationInput:
     return SimulationInput(
         dataset_metadata=_metadata(bars),
         bars=bars,
         strategy_configs=configs,
+        execution_config=EXECUTION_CONFIG,
+        quotes=quotes,
         execution_opportunities=opportunities,
         simulation_id="p04c-integration-fixture",
     )
@@ -132,7 +159,7 @@ def test_complete_entry_path_preserves_same_bar_ineligibility_end_to_end() -> No
     assert result.evaluations[-1].disposition is StrategyEvaluationDisposition.SIGNAL_PROPOSED
     assert _lifecycle_record(result, "same-bar").decision is LifecycleDecision.INELIGIBLE
     later = _lifecycle_record(result, "later")
-    assert later.decision is LifecycleDecision.ACTION_EXECUTED
+    assert later.decision is LifecycleDecision.ACTION_FILLED
     assert result.lifecycle.state_for(SPY).state is LifecycleState.HOLDING
     assert result.lifecycle.state_for(SPY).open_position is not None
 
@@ -155,9 +182,7 @@ def test_legal_exit_returns_holding_lifecycle_to_flat() -> None:
         SignalType.LONG_ENTRY,
         SignalType.EXIT,
     ]
-    assert (
-        _lifecycle_record(result, "exit-opportunity").decision is LifecycleDecision.ACTION_EXECUTED
-    )
+    assert _lifecycle_record(result, "exit-opportunity").decision is LifecycleDecision.ACTION_FILLED
     assert result.lifecycle.state_for(SPY).state is LifecycleState.FLAT
     assert result.lifecycle.open_positions == ()
 
@@ -217,7 +242,7 @@ def test_delayed_availability_prevents_retroactive_feature_signal_or_action() ->
     assert len(result.signals) == 1
     assert all(signal.decision_time >= delayed_time for signal in result.signals)
     assert _lifecycle_record(result, "delivery-instant").decision is LifecycleDecision.INELIGIBLE
-    assert _lifecycle_record(result, "after-delivery").decision is LifecycleDecision.ACTION_EXECUTED
+    assert _lifecycle_record(result, "after-delivery").decision is LifecycleDecision.ACTION_FILLED
     assert result.lifecycle.state_for(SPY).state is LifecycleState.HOLDING
 
 
@@ -296,6 +321,45 @@ def test_future_extension_preserves_historical_simulation_evidence() -> None:
     assert expanded.lifecycle.state_for(SPY).state is LifecycleState.HOLDING
 
 
+def test_future_quote_cannot_rewrite_completed_execution_outcome_end_to_end() -> None:
+    prefix_bars = (_bar(SPY, "10", 0), _bar(SPY, "9", 1))
+    first_opportunity = _opportunity(
+        "entry-opportunity", SPY, prefix_bars[-1].availability_time + timedelta(microseconds=1)
+    )
+    prefix = run_simulation(
+        _input(prefix_bars, opportunities=(first_opportunity,), quotes=(_quote(),))
+    )
+
+    future_bar = _bar(SPY, "8", 2)
+    future_quote_time = future_bar.availability_time
+    expanded = run_simulation(
+        _input(
+            (*prefix_bars, future_bar),
+            opportunities=(
+                first_opportunity,
+                _opportunity("future-opportunity", SPY, future_quote_time),
+            ),
+            quotes=(
+                _quote(),
+                _quote(
+                    bid="100",
+                    ask="100.5",
+                    observation_time=future_quote_time,
+                    availability_time=future_quote_time,
+                ),
+            ),
+        )
+    )
+
+    assert prefix.execution_outcomes[0].execution_price == Decimal("101")
+    assert (
+        expanded.execution_attempts[: len(prefix.execution_attempts)] == prefix.execution_attempts
+    )
+    assert (
+        expanded.execution_outcomes[: len(prefix.execution_outcomes)] == prefix.execution_outcomes
+    )
+
+
 def test_end_of_stream_retains_pending_entry_holding_and_pending_exit() -> None:
     entry_bars = (_bar(SPY, "10", 0), _bar(SPY, "9", 1))
     pending_entry = run_simulation(_input(entry_bars))
@@ -338,6 +402,7 @@ def test_runner_requires_declared_validated_data_and_preserves_p01_order_failure
         dataset_metadata=replace(_metadata(bars), validation_status=ValidationStatus.UNVALIDATED),
         bars=bars,
         strategy_configs=(_config(SPY),),
+        execution_config=EXECUTION_CONFIG,
     )
     with pytest.raises(SimulationContractError, match="validated status"):
         run_simulation(unvalidated)

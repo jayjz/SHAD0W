@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P0.4C complete**
+**Current milestone: P0.5A complete**
 
-**Next milestone: P0.5 — transaction-cost/fill model**
+**Next milestone: P0.5B — explicit cost/slippage sensitivity**
 
 Implemented so far:
 
@@ -68,9 +68,10 @@ Implemented so far:
 | Feature kernel                 | ✅ Complete       | Returns, rolling mean, population variance/std, z-score, explicit warm-up and unavailability states   |
 | Initial hypothesis             | ✅ Complete       | Deterministic close-z-score mean-reversion signal contract                                            |
 | Timeline semantics             | ✅ Complete       | Deterministic causal event ordering and strict anti-look-ahead execution eligibility                  |
-| Lifecycle semantics            | ✅ Complete       | Per-instrument `flat → pending_entry → holding → pending_exit → flat` state machine                   |
-| Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, and lifecycle                  |
-| Fill / cost model              | ⏳ Next           | Spread, slippage, latency, rejected/unfilled execution                                                |
+| Lifecycle semantics            | ✅ Complete       | Per-instrument state changes only after an explicit successful execution outcome                       |
+| Full chronological runner      | ✅ Complete      | Availability-driven composition of data, features, strategy, timeline, lifecycle, and execution       |
+| Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
+| Cost / slippage model          | ⏳ Next           | One explicit additional cost/slippage assumption and sensitivity evidence                              |
 | Evaluation engine              | ⏳ Planned        | Holdouts, walk-forward, stability, ablation, performance evidence                                     |
 | Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
@@ -290,24 +291,24 @@ stateDiagram-v2
     [*] --> Flat
 
     Flat --> PendingEntry: legal LONG_ENTRY signal
-    PendingEntry --> Holding: later eligible opportunity
+    PendingEntry --> Holding: legal opportunity + FILLED outcome
 
     Holding --> PendingExit: legal EXIT signal
-    PendingExit --> Flat: later eligible opportunity
+    PendingExit --> Flat: legal opportunity + FILLED outcome
 ```
 
-The current lifecycle deliberately models **state, not economics**.
+The current lifecycle models state from explicit deterministic execution evidence, not economics.
 
-An eligible opportunity does **not** yet mean:
+An eligible opportunity does **not** mean a fill. It creates an attempt only; `unfilled` and `rejected` outcomes leave the action pending. The P0.5A quote model uses only causally available fresh provider-neutral quotes: a long entry buys at ask and an exit sells at bid. A crossed quote is rejected rather than repaired, and no midpoint, close, or later favorable quote is substituted.
 
-* a realistic broker fill;
-* a particular price;
+P0.5A still does **not** model:
+
 * a quantity;
 * available liquidity;
-* zero slippage;
-* successful execution.
+* fees or arbitrary slippage;
+* cash, P&L, return, equity, or performance metrics.
 
-Those semantics belong to later execution milestones.
+Buying at ask and selling at bid already preserves quoted spread; P0.5A does not subtract a second arbitrary spread charge. Additional cost, slippage, and liquidity assumptions belong to later P0.5 work.
 
 Duplicate and impossible actions are deterministic and explicit. Open or pending state remains visible at the end of a simulation stream rather than being silently liquidated.
 
@@ -322,7 +323,8 @@ SHAD0W/
 │   ├── data/            # Validation and deterministic dataset identity
 │   ├── features/        # Deterministic quantitative features
 │   ├── strategies/      # Explicit falsifiable hypotheses
-│   └── simulation/      # Timeline and lifecycle semantics
+│   ├── simulation/      # Timeline and lifecycle semantics
+│   └── execution/       # Deterministic quote-side execution semantics
 │
 ├── tests/
 │   ├── fixtures/        # Deterministic synthetic market data
@@ -508,19 +510,29 @@ tested not to rewrite established historical evidence.
 
 ---
 
-#### P0.5 — Transaction-cost and fill model ⏳ NEXT
+#### P0.5A — Deterministic execution and fill semantics ✅
 
-Model economic execution assumptions explicitly:
+Implemented:
 
-* executable price source;
-* spread;
-* slippage;
-* latency;
-* fill probability/eligibility;
-* rejected or impossible fills;
-* execution constraints.
+* immutable attempt and outcome evidence with `filled`, `unfilled`, and `rejected` status;
+* explicit quote-model identity and immutable freshness configuration;
+* causal selection of the newest available matching quote;
+* market-age freshness using attempt time minus quote observation time;
+* long entries at ask and long exits at bid;
+* deterministic crossed-quote rejection and missing/delayed/stale unfilled behavior;
+* lifecycle transitions only after `filled`;
+* prefix-stability regression coverage against future quote look-ahead.
 
-An execution opportunity must not automatically imply a successful fill.
+P0.5A introduces no quantity, partial fills, broker behavior, commissions, slippage,
+cash, P&L, or metrics.
+
+---
+
+#### P0.5B — Explicit cost/slippage sensitivity ⏳ NEXT
+
+Add one small, stated deterministic cost or slippage assumption to P0.5A outcomes,
+including sensitivity evidence. Do not begin evaluation, sizing, partial-fill,
+market-impact, or broker work in that slice.
 
 ---
 

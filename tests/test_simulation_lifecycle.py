@@ -1,4 +1,4 @@
-"""Adversarial P0.4B tests for authoritative price-free lifecycle state."""
+"""Adversarial lifecycle-state tests across the P0.4B/P0.5A boundary."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from typing import Literal
 
 import pytest
 
-from shadow.domain import Instrument
+from shadow.domain import AvailabilitySemantics, Instrument, Provenance, Quote
+from shadow.execution import QuoteExecutionConfig
 from shadow.features import (
     FEATURE_IMPLEMENTATION_VERSION,
     FeatureInput,
@@ -35,6 +36,18 @@ from shadow.strategies import MeanReversionConfig, PositionState, Signal, evalua
 TIME = datetime(2024, 1, 2, 14, 31, tzinfo=UTC)
 SPY = Instrument("SPY")
 QQQ = Instrument("QQQ")
+EXECUTION_CONFIG = QuoteExecutionConfig(maximum_quote_age=timedelta(days=1))
+QUOTE = Quote(
+    instrument=SPY,
+    bid_price=Decimal("99"),
+    ask_price=Decimal("101"),
+    bid_size=None,
+    ask_size=None,
+    observation_time=TIME,
+    availability_time=TIME,
+    availability_semantics=AvailabilitySemantics.MODELED,
+    provenance=Provenance("synthetic"),
+)
 
 
 def _signal(
@@ -116,7 +129,7 @@ def test_flat_entry_creates_one_pending_entry_action() -> None:
     assert _record(result, "entry").decision is LifecycleDecision.ACTION_CREATED
 
 
-def test_pending_entry_becomes_holding_only_at_strictly_later_opportunity() -> None:
+def test_eligible_opportunity_alone_cannot_transition_a_pending_entry() -> None:
     result = process_lifecycle(
         [
             _entry("entry"),
@@ -131,23 +144,25 @@ def test_pending_entry_becomes_holding_only_at_strictly_later_opportunity() -> N
         is LifecycleReason.OPPORTUNITY_NOT_STRICTLY_AFTER_ELIGIBILITY_BOUNDARY
     )
     state = result.state_for(SPY)
-    assert state.state is LifecycleState.HOLDING
-    assert state.open_position is not None
-    assert state.open_position.opened_at == TIME + timedelta(microseconds=1)
+    assert state.state is LifecycleState.PENDING_ENTRY
+    assert state.open_position is None
+    assert _record(result, "later").reason is LifecycleReason.EXECUTION_MODEL_NOT_CONFIGURED
 
 
-def test_holding_exit_creates_pending_exit_and_later_opportunity_closes_it() -> None:
+def test_holding_exit_closes_only_after_a_filled_attempt() -> None:
     exit_time = TIME + timedelta(minutes=1)
     close_time = exit_time + timedelta(microseconds=1)
     result = process_lifecycle(
-        [*_holding_events(), _exit("exit", exit_time), _opportunity("close", close_time)]
+        [*_holding_events(), _exit("exit", exit_time), _opportunity("close", close_time)],
+        execution_config=EXECUTION_CONFIG,
+        quotes=(QUOTE,),
     )
 
     assert _record(result, "exit").resulting_state is LifecycleState.PENDING_EXIT
     close_record = _record(result, "close")
     assert close_record.prior_state is LifecycleState.PENDING_EXIT
     assert close_record.resulting_state is LifecycleState.FLAT
-    assert close_record.reason is LifecycleReason.EXIT_ACTION_EXECUTED
+    assert close_record.reason is LifecycleReason.EXIT_ACTION_FILLED
     assert result.state_for(SPY).state is LifecycleState.FLAT
 
 
@@ -163,7 +178,9 @@ def test_duplicate_entry_is_suppressed_and_cannot_create_multiple_actions() -> N
 
 def test_entry_while_holding_is_rejected_without_pyramiding() -> None:
     result = process_lifecycle(
-        [*_holding_events(), _entry("second-entry", TIME + timedelta(minutes=1))]
+        [*_holding_events(), _entry("second-entry", TIME + timedelta(minutes=1))],
+        execution_config=EXECUTION_CONFIG,
+        quotes=(QUOTE,),
     )
 
     record = _record(result, "second-entry")
@@ -189,7 +206,9 @@ def test_duplicate_exit_is_suppressed() -> None:
             *_holding_events(),
             _exit("exit-a", exit_time),
             _exit("exit-b", exit_time + timedelta(seconds=1)),
-        ]
+        ],
+        execution_config=EXECUTION_CONFIG,
+        quotes=(QUOTE,),
     )
 
     duplicate = _record(result, "exit-b")
@@ -218,7 +237,9 @@ def test_different_instruments_have_isolated_lifecycle_state() -> None:
             _entry("spy-entry", TIME, instrument=SPY),
             _entry("qqq-entry", TIME, instrument=QQQ),
             _opportunity("spy-opportunity", TIME + timedelta(microseconds=1), instrument=SPY),
-        ]
+        ],
+        execution_config=EXECUTION_CONFIG,
+        quotes=(QUOTE,),
     )
 
     assert result.state_for(SPY).state is LifecycleState.HOLDING
@@ -234,18 +255,22 @@ def test_reversed_input_order_has_the_same_lifecycle_trace() -> None:
         _opportunity("exit-opportunity", TIME + timedelta(minutes=1, microseconds=1)),
     ]
 
-    assert process_lifecycle(events) == process_lifecycle(reversed(events))
+    assert process_lifecycle(
+        events, execution_config=EXECUTION_CONFIG, quotes=(QUOTE,)
+    ) == process_lifecycle(reversed(events), execution_config=EXECUTION_CONFIG, quotes=(QUOTE,))
 
 
 def test_future_append_cannot_rewrite_prior_lifecycle_records() -> None:
     prefix_events = _holding_events()
-    prefix = process_lifecycle(prefix_events)
+    prefix = process_lifecycle(prefix_events, execution_config=EXECUTION_CONFIG, quotes=(QUOTE,))
     appended = process_lifecycle(
         [
             *prefix_events,
             _exit("exit", TIME + timedelta(minutes=1)),
             _opportunity("close", TIME + timedelta(minutes=1, microseconds=1)),
-        ]
+        ],
+        execution_config=EXECUTION_CONFIG,
+        quotes=(QUOTE,),
     )
 
     assert appended.records[: len(prefix.records)] == prefix.records
@@ -254,7 +279,9 @@ def test_future_append_cannot_rewrite_prior_lifecycle_records() -> None:
 
 def test_pending_action_and_open_position_remain_visible_at_end_of_simulation() -> None:
     pending = process_lifecycle([_entry("pending")])
-    holding = process_lifecycle(_holding_events())
+    holding = process_lifecycle(
+        _holding_events(), execution_config=EXECUTION_CONFIG, quotes=(QUOTE,)
+    )
 
     assert pending.state_for(SPY).state is LifecycleState.PENDING_ENTRY
     assert len(pending.unresolved_actions) == 1

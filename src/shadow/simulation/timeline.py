@@ -28,16 +28,17 @@ class EligibilityReason(StrEnum):
     OPPORTUNITY_NOT_STRICTLY_AFTER_SIGNAL_AVAILABILITY = (
         "opportunity_not_strictly_after_signal_availability"
     )
-    EARLIEST_LEGAL_OPPORTUNITY = "earliest_legal_opportunity"
+    LEGAL_EXECUTION_OPPORTUNITY = "legal_execution_opportunity"
 
 
 @dataclass(frozen=True, slots=True)
 class PendingAction:
-    """A signal awaiting the first legal execution opportunity.
+    """A signal whose opportunities must remain strictly later than its availability.
 
     ``eligibility_after_time`` is an exclusive boundary: a qualifying execution
-    event must have ``event_time > eligibility_after_time``.  It is intentionally
-    not a broker order or risk-authorized intent.
+    event must have ``event_time > eligibility_after_time``.  P0.5A leaves this
+    evidence pending because only an explicit execution outcome may consume a
+    lifecycle action.  It is intentionally not a broker order or risk authorization.
     """
 
     signal_reference: str
@@ -64,7 +65,7 @@ class TimelineRecord:
 
 @dataclass(frozen=True, slots=True)
 class TimelineResult:
-    """Canonical events, reconstructable trace, and actions still awaiting opportunity."""
+    """Canonical events, reconstructable trace, and still-open eligibility evidence."""
 
     ordered_events: tuple[TimelineEvent, ...]
     records: tuple[TimelineRecord, ...]
@@ -97,13 +98,14 @@ def _event_record(event: TimelineEvent) -> TimelineRecord:
 
 
 def process_timeline(events: Iterable[TimelineEvent]) -> TimelineResult:
-    """Process a fixed event set into earliest legal eligibility evidence.
+    """Process a fixed event set into strictly-later eligibility evidence.
 
     The legal rule is strict: a signal can be eligible only at an execution
     opportunity for the same instrument whose event time is later than the signal's
     availability time.  Equal timestamps remain ineligible even though their
-    documented event precedence places signals before opportunities.  The first
-    qualifying opportunity becomes that signal's recorded earliest legal opportunity.
+    documented event precedence places signals before opportunities.  Every later
+    opportunity remains chronologically legal; P0.5A determines whether a pending
+    lifecycle action actually attempts it and only a fill may consume that action.
     No fill, price, position, risk, or conflict resolution is implied.
     """
     ordered_events = _ordered_events(events)
@@ -145,12 +147,11 @@ def process_timeline(events: Iterable[TimelineEvent]) -> TimelineResult:
             records.append(_event_record(event))
             continue
 
-        eligible_references: set[str] = set()
         for action in matching:
             eligible = event.effective_time > action.eligibility_after_time
             decision = EligibilityDecision.ELIGIBLE if eligible else EligibilityDecision.INELIGIBLE
             reason = (
-                EligibilityReason.EARLIEST_LEGAL_OPPORTUNITY
+                EligibilityReason.LEGAL_EXECUTION_OPPORTUNITY
                 if eligible
                 else EligibilityReason.OPPORTUNITY_NOT_STRICTLY_AFTER_SIGNAL_AVAILABILITY
             )
@@ -168,12 +169,6 @@ def process_timeline(events: Iterable[TimelineEvent]) -> TimelineResult:
                     reason=reason,
                 )
             )
-            if eligible:
-                eligible_references.add(action.signal_reference)
-        if eligible_references:
-            pending = [
-                action for action in pending if action.signal_reference not in eligible_references
-            ]
 
     return TimelineResult(
         ordered_events=ordered_events,

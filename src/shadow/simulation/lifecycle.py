@@ -1,9 +1,4 @@
-"""Authoritative, price-free position lifecycle transitions for simulation.
-
-This module owns simulated per-instrument position state.  It composes the
-P0.4A timeline's canonical ordering and strict eligibility evidence, but does
-not model authorization, fills, prices, quantities, costs, or economics.
-"""
+"""Authoritative lifecycle transitions driven by explicit execution outcomes."""
 
 from __future__ import annotations
 
@@ -13,7 +8,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from shadow.domain import Instrument
+from shadow.domain import Instrument, Quote
+from shadow.execution import (
+    ExecutionActionType,
+    ExecutionAttempt,
+    ExecutionOutcome,
+    ExecutionStatus,
+    QuoteExecutionConfig,
+    resolve_execution_attempt,
+)
 from shadow.simulation.events import EventKind, TimelineEvent
 from shadow.simulation.timeline import EligibilityDecision, TimelineResult, process_timeline
 from shadow.strategies import SignalType
@@ -32,11 +35,9 @@ class LifecycleState(StrEnum):
     PENDING_EXIT = "pending_exit"
 
 
-class LifecycleActionType(StrEnum):
-    """The intentionally small action vocabulary derived from a signal."""
-
-    ENTRY = "entry"
-    EXIT = "exit"
+# Kept as the lifecycle-facing name for the P0.4 public contract.  P0.5A makes
+# this same action vocabulary the explicit execution intent carried by attempts.
+LifecycleActionType = ExecutionActionType
 
 
 class LifecycleDecision(StrEnum):
@@ -44,7 +45,9 @@ class LifecycleDecision(StrEnum):
 
     NOT_APPLICABLE = "not_applicable"
     ACTION_CREATED = "action_created"
-    ACTION_EXECUTED = "action_executed"
+    ACTION_FILLED = "action_filled"
+    ATTEMPT_UNFILLED = "attempt_unfilled"
+    ATTEMPT_REJECTED = "attempt_rejected"
     REJECTED = "rejected"
     IGNORED_REDUNDANT = "ignored_redundant"
     INELIGIBLE = "ineligible"
@@ -56,8 +59,11 @@ class LifecycleReason(StrEnum):
     EVENT_NOT_LIFECYCLE_RELEVANT = "event_not_lifecycle_relevant"
     ENTRY_ACTION_CREATED = "entry_action_created"
     EXIT_ACTION_CREATED = "exit_action_created"
-    ENTRY_ACTION_EXECUTED = "entry_action_executed"
-    EXIT_ACTION_EXECUTED = "exit_action_executed"
+    ENTRY_ACTION_FILLED = "entry_action_filled"
+    EXIT_ACTION_FILLED = "exit_action_filled"
+    EXECUTION_UNFILLED = "execution_unfilled"
+    EXECUTION_REJECTED = "execution_rejected"
+    EXECUTION_MODEL_NOT_CONFIGURED = "execution_model_not_configured"
     ENTRY_ALREADY_PENDING = "entry_already_pending"
     ENTRY_ALREADY_HOLDING = "entry_already_holding"
     ENTRY_WHILE_EXIT_PENDING = "entry_while_exit_pending"
@@ -192,6 +198,8 @@ class LifecycleRecord:
     resulting_state: LifecycleState
     action: LifecycleAction | None
     position: SimulatedPosition | None
+    execution_attempt: ExecutionAttempt | None
+    execution_outcome: ExecutionOutcome | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +211,8 @@ class LifecycleResult:
     final_states: tuple[InstrumentLifecycleState, ...]
     unresolved_actions: tuple[LifecycleAction, ...]
     open_positions: tuple[SimulatedPosition, ...]
+    execution_attempts: tuple[ExecutionAttempt, ...]
+    execution_outcomes: tuple[ExecutionOutcome, ...]
 
     def state_for(self, instrument: Instrument) -> InstrumentLifecycleState:
         """Return an explicit final state; unseen instruments are flat."""
@@ -280,6 +290,8 @@ def _record(
     *,
     action: LifecycleAction | None = None,
     position: SimulatedPosition | None = None,
+    execution_attempt: ExecutionAttempt | None = None,
+    execution_outcome: ExecutionOutcome | None = None,
 ) -> LifecycleRecord:
     return LifecycleRecord(
         event_reference=event.event_id,
@@ -293,17 +305,46 @@ def _record(
         resulting_state=resulting_state.state,
         action=action,
         position=position,
+        execution_attempt=execution_attempt,
+        execution_outcome=execution_outcome,
     )
 
 
-def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
-    """Apply price-free lifecycle transitions to a fixed P0.4A event stream.
+def _attempt_for(
+    action: LifecycleAction,
+    opportunity: TimelineEvent,
+    execution_config: QuoteExecutionConfig,
+) -> ExecutionAttempt:
+    """Create stable attempt evidence only after P0.4A has authorized the opportunity."""
+    return ExecutionAttempt(
+        attempt_id=f"execution-attempt:{action.action_id}:{opportunity.event_id}",
+        action_id=action.action_id,
+        signal_reference=action.signal_reference,
+        instrument=action.instrument,
+        action_type=action.action_type,
+        eligibility_after_time=action.eligibility_after_time,
+        opportunity_reference=opportunity.event_id,
+        opportunity_instrument=opportunity.instrument,
+        opportunity_time=opportunity.effective_time,
+        attempt_time=opportunity.effective_time,
+        execution_model_id=execution_config.execution_model_id,
+    )
+
+
+def process_lifecycle(
+    events: Iterable[TimelineEvent],
+    *,
+    execution_config: QuoteExecutionConfig | None = None,
+    quotes: Iterable[Quote] = (),
+) -> LifecycleResult:
+    """Apply lifecycle transitions to P0.4A events and explicit execution outcomes.
 
     P0.4A remains the source of temporal legality: this function first obtains its
     canonical event ordering and strict, same-instrument, strictly-later eligibility
     trace.  The lifecycle then accepts at most one active action and one open
-    position per instrument.  An eligible opportunity is a neutral lifecycle event,
-    not a broker fill or an assertion about a fill price.
+    position per instrument.  An eligible opportunity creates an execution attempt;
+    it cannot transition state unless the configured deterministic model returns a
+    ``FILLED`` outcome.
 
     Same-time entry and exit signals for one instrument reject *both* signals.  For
     repeated same-direction signals, the first canonical event is retained and later
@@ -311,11 +352,21 @@ def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
     independent of caller input order.  Pending actions have no expiry: they remain
     visible in ``unresolved_actions`` at the end of this fixed simulation input.
     """
+    materialized_quotes = tuple(quotes)
+    if not all(isinstance(quote, Quote) for quote in materialized_quotes):
+        raise LifecycleContractError("quotes must contain only Quote values")
+    if execution_config is not None and not isinstance(execution_config, QuoteExecutionConfig):
+        raise LifecycleContractError("execution_config must be a QuoteExecutionConfig or None")
+    if execution_config is None and materialized_quotes:
+        raise LifecycleContractError("quotes require an explicit execution_config")
+
     timeline = process_timeline(events)
     eligible_pairs = _eligible_pairs(timeline)
     conflicts = _conflicted_signal_references(timeline.ordered_events)
     states: dict[Instrument, InstrumentLifecycleState] = {}
     records: list[LifecycleRecord] = []
+    execution_attempts: list[ExecutionAttempt] = []
+    execution_outcomes: list[ExecutionOutcome] = []
 
     for event in timeline.ordered_events:
         current = states.setdefault(event.instrument, _flat_state(event.instrument))
@@ -474,6 +525,50 @@ def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
                 )
                 continue
 
+            if execution_config is None:
+                records.append(
+                    _record(
+                        event,
+                        prior_state,
+                        LifecycleDecision.NOT_APPLICABLE,
+                        LifecycleReason.EXECUTION_MODEL_NOT_CONFIGURED,
+                        current,
+                        action=pending_action,
+                        position=current.open_position,
+                    )
+                )
+                continue
+
+            attempt = _attempt_for(pending_action, event, execution_config)
+            outcome = resolve_execution_attempt(attempt, materialized_quotes, execution_config)
+            execution_attempts.append(attempt)
+            execution_outcomes.append(outcome)
+            if outcome.status is not ExecutionStatus.FILLED:
+                decision = (
+                    LifecycleDecision.ATTEMPT_UNFILLED
+                    if outcome.status is ExecutionStatus.UNFILLED
+                    else LifecycleDecision.ATTEMPT_REJECTED
+                )
+                reason = (
+                    LifecycleReason.EXECUTION_UNFILLED
+                    if outcome.status is ExecutionStatus.UNFILLED
+                    else LifecycleReason.EXECUTION_REJECTED
+                )
+                records.append(
+                    _record(
+                        event,
+                        prior_state,
+                        decision,
+                        reason,
+                        current,
+                        action=pending_action,
+                        position=current.open_position,
+                        execution_attempt=attempt,
+                        execution_outcome=outcome,
+                    )
+                )
+                continue
+
             if current.state is LifecycleState.PENDING_ENTRY:
                 position = SimulatedPosition(
                     instrument=event.instrument,
@@ -486,16 +581,16 @@ def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
                     pending_action=None,
                     open_position=position,
                 )
-                decision = LifecycleDecision.ACTION_EXECUTED
-                reason = LifecycleReason.ENTRY_ACTION_EXECUTED
+                decision = LifecycleDecision.ACTION_FILLED
+                reason = LifecycleReason.ENTRY_ACTION_FILLED
             elif current.state is LifecycleState.PENDING_EXIT:
                 closed_position = current.open_position
                 if closed_position is None:
                     raise LifecycleContractError("pending exit requires an open position")
                 position = closed_position
                 next_state = _flat_state(event.instrument)
-                decision = LifecycleDecision.ACTION_EXECUTED
-                reason = LifecycleReason.EXIT_ACTION_EXECUTED
+                decision = LifecycleDecision.ACTION_FILLED
+                reason = LifecycleReason.EXIT_ACTION_FILLED
             else:
                 raise LifecycleContractError("pending action is incompatible with lifecycle state")
             states[event.instrument] = next_state
@@ -508,6 +603,8 @@ def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
                     next_state,
                     action=pending_action,
                     position=position,
+                    execution_attempt=attempt,
+                    execution_outcome=outcome,
                 )
             )
             continue
@@ -536,4 +633,6 @@ def process_lifecycle(events: Iterable[TimelineEvent]) -> LifecycleResult:
         final_states=final_states,
         unresolved_actions=unresolved_actions,
         open_positions=open_positions,
+        execution_attempts=tuple(execution_attempts),
+        execution_outcomes=tuple(execution_outcomes),
     )
