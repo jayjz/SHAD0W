@@ -3,7 +3,7 @@
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 
 from shadow.data import canonical_dataset_bytes, dataset_fingerprint
 from tests.test_market_validation import _bars, _metadata
@@ -34,6 +34,18 @@ def test_material_observation_change_changes_identity() -> None:
     changed = [replace(bars[0], close=Decimal("470.21")), *bars[1:]]
 
     assert dataset_fingerprint(changed, _metadata()) != dataset_fingerprint(bars, _metadata())
+
+
+def test_fingerprint_is_exact_and_independent_of_decimal_context() -> None:
+    bars = _bars("valid_bars.json")
+    changed = [replace(bars[0], close=Decimal("470.20000000000000000000000000001")), *bars[1:]]
+    expected = dataset_fingerprint(changed, _metadata())
+    assert expected != dataset_fingerprint(bars, _metadata())
+    with localcontext() as context:
+        context.prec = 2
+        context.Emax = 2
+        context.traps[Inexact] = True
+        assert dataset_fingerprint(changed, _metadata()) == expected
 
 
 def test_appending_future_record_preserves_prior_canonical_record() -> None:
