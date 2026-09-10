@@ -12,6 +12,8 @@ Use chronological train/development/validation/final-holdout partitions appropri
 
 Prevent look-ahead bias by modeling when each datum became available. P0.1 represents completed bars at interval end and records a separate UTC availability instant; later decision/simulation code must consume only records whose availability instant has arrived. Completed-bar strategies cannot assume knowledge of that bar's future path to obtain a same-bar fill. Address survivorship bias when the instrument universe can change over time. Preserve source timezone and session semantics as provenance throughout processing.
 
+P0.2A makes the corresponding feature rule executable: each feature snapshot is available no earlier than the latest availability time of the bars required to compute it. Its trailing-window calculations are prefix-stable: appending later observations must leave every already-defined snapshot exactly unchanged. This protects feature research from accidental look-ahead before strategies or simulation exist; it does not by itself establish valid decision or fill timing.
+
 ## Falsification and robustness
 
 Treat parameter mining and multiple testing as threats to evidence: record alternatives considered and avoid presenting the best discovered configuration as an independent result. Evaluate explicit transaction costs, sensitivity to plausible slippage, latency, and execution constraints. Compare against relevant benchmarks, inspect parameter stability, and use ablations to identify which assumptions or components create the result.

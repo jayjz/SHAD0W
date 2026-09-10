@@ -26,6 +26,14 @@ The current `domain` and `data` modules provide immutable provider-neutral `Bar`
 
 For a `Bar`, `observation_time` is the **end** of its represented interval. `availability_time` is the earliest modeled instant at which a strategy may consume the completed record; the source of that assertion is an explicit availability-semantics value. Both timestamps are normalized to UTC, while source timezone/session descriptions remain provenance. This permits a later simulation to enforce availability without retroactively changing a record.
 
+## Implemented P0.2A feature boundary
+
+`shadow.features` computes a deliberately small set of immutable close-price snapshots from a P0.1-validated chronological bar sequence: one-period simple returns, strict-window rolling mean, population variance and standard deviation, and z-scores. Each `FeatureSnapshot` identifies its instrument, feature, close input, implementation version, source dataset ID, trailing input count, market-observation time, propagated availability time, and semantic state. It is either `ready` with a finite `Decimal` value, `warming_up` with the explicit reason `insufficient_history`, or `unavailable` with an explicit reason such as `zero_variance`; failed calculations raise an error instead of becoming a snapshot.
+
+The kernel validates through `validate_bars` and never sorts, deduplicates, fills, interpolates, or otherwise repairs observations. It groups only a supplied sequence's trailing observations for the same instrument. A snapshot's availability is the maximum availability of the inputs used to establish it, including partial history while warming up. This makes a value legal no earlier than every required input and makes appending later bars unable to rewrite prior snapshots.
+
+P0.2A keeps feature arithmetic in the standard-library `Decimal` domain, with an isolated fixed 34-significant-digit, half-even calculation context and canonical finite-Decimal output. This preserves P0.1's boundary representation, avoids global Decimal-context dependence, and adds no numerical runtime dependency. Future vectorized internals, if warranted, must retain this domain boundary and demonstrate reproducible canonical output before being adopted.
+
 ## Authority and time
 
 Strategies propose trades; risk authorizes or rejects them. Missing, stale, inconsistent, or invalid critical state results in no trade. Completed-bar decisions may only consume information modeled as available at that decision time; future OHLC path information cannot be used to justify a same-bar fill.

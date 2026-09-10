@@ -2,7 +2,7 @@
 
 SHAD0W is a deterministic quantitative research laboratory. Its central question is whether a precisely specified market hypothesis produces a reproducible, executable, risk-adjusted edge after realistic costs.
 
-P0.0 established the repository operating foundation. P0.1 establishes typed, provider-neutral market-data contracts with UTC availability semantics, deterministic validation, provenance, canonical SHA-256 dataset identity, and local synthetic fixtures. It contains no strategy, feature engine, simulator, broker integration, order submission, or LLM integration. P0.2 is the next milestone.
+P0.0 established the repository operating foundation. P0.1 established typed, provider-neutral market-data contracts with UTC availability semantics, deterministic validation, provenance, canonical SHA-256 dataset identity, and local synthetic fixtures. P0.2A establishes a small deterministic close-price feature kernel: simple returns, strict full-window population rolling statistics and z-scores, semantic warm-up/unavailability states, and availability propagation. It contains no strategy, simulator, broker integration, order submission, or LLM integration. P0.2B is the next milestone.
 
 ## Development
 
