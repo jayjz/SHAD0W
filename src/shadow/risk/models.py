@@ -13,7 +13,7 @@ from shadow.domain import Instrument, Quote
 from shadow.features import FeatureSnapshot
 from shadow.strategies import Signal, SignalType
 
-RISK_MODEL_VERSION = "shadow.risk.paper.v1"
+RISK_MODEL_VERSION = "shadow.risk.paper.v2"
 
 
 class RiskContractError(ValueError):
@@ -595,7 +595,11 @@ _AUTHORIZATION_ISSUER = object()
 
 @dataclass(frozen=True, slots=True)
 class AuthorizedOrder:
-    """One gate-issued application capability; historical decisions are insufficient."""
+    """One gate-issued admission-time capability, insufficient for external submission.
+
+    There is no expiry or assurance of current controls/freshness at consumption.
+    A copied private token shares the original grant's single claim, never a new grant.
+    """
 
     grant_id: str
     intent_identity: str

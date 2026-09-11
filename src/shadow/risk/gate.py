@@ -52,10 +52,12 @@ class _AdmissionRecord:
 
 
 class RiskGate:
-    """Atomically decide, reserve, issue, and consume paper submission capability.
+    """Atomically decide, reserve, issue, and consume admission-time capability.
 
     One gate owner per operational scope is an explicit P2A assumption. State is
     process-local and is neither persistent nor evidence of broker state after restart.
+    Policy is fixed for this gate's lifetime. Claims do not revalidate time or controls
+    and are insufficient for external submission.
     """
 
     def __init__(self, *, operational_scope: str, policy: RiskPolicy) -> None:
@@ -94,11 +96,11 @@ class RiskGate:
             return tuple(record.decision for record in self._history.values())
 
     def _effective_state(self, state: RiskState) -> RiskState:
-        existing_references = {order.reference for order in state.outstanding_orders}
+        # Only a complete match represents the same reservation. Retain conflicts
+        # so the evaluator can reject duplicate references/identities or instruments.
+        existing_orders = set(state.outstanding_orders)
         gate_orders = tuple(
-            order
-            for order in self._reservations.values()
-            if order.reference not in existing_references
+            order for order in self._reservations.values() if order not in existing_orders
         )
         if not gate_orders:
             return state
@@ -210,7 +212,13 @@ class RiskGate:
             return RiskAdmission(decision=decision, authorization=authorization)
 
     def claim_for_dispatch(self, authorization: object) -> OrderIntent:
-        """Consume one genuine grant and return its intent to a future paper adapter."""
+        """Consume one recorded admission grant; this performs no external dispatch.
+
+        This checks gate ownership and one-use consumption only. It has no expiry,
+        current policy/control check, or freshness guarantee at claim time. Future
+        external submission requires a separately designed revalidation boundary.
+        Consumption does not release the reservation, even if the intent is abandoned.
+        """
         if not isinstance(authorization, AuthorizedOrder):
             raise DispatchAuthorizationError("dispatch requires a gate-issued AuthorizedOrder")
         with self._lock:

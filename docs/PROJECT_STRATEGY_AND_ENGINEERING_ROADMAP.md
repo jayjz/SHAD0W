@@ -31,7 +31,7 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 
 - **P3:** deterministic regime classification is deferred pending operational evidence.
 - **P4A:** live-data shadow mode with no orders is the smallest justified next milestone.
-- **P5A:** Alpaca paper execution may follow behind the P2A authorization boundary.
+- **P5A:** Alpaca paper execution may follow only after submission-time control/policy/freshness revalidation, durable duplicate handling, and broker-authoritative reservation reconciliation extend the P2A admission boundary. P2A claims alone are insufficient for external submission and reservations do not support continuous operation.
 - **P6:** asynchronous semantic event-risk classification with typed, time-bounded outputs.
 - **P7:** execution-quality and signal-decay research.
 - **P8:** additional strategy research.

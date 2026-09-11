@@ -788,3 +788,75 @@ def test_inconsistent_state_elsewhere_in_scope_fails_closed() -> None:
         market_quote=quote(instrument=QQQ),
     )
     assert RiskRejectionReason.INCONSISTENT_OPERATIONAL_STATE in reasons(decision)
+
+
+@pytest.mark.parametrize("changed_field", ["instrument", "intent_identity", "quantity", "side"])
+def test_supplied_reference_cannot_hide_a_different_gate_reservation(changed_field: str) -> None:
+    gate = RiskGate(operational_scope="paper-primary", policy=policy())
+    first = gate.admit(
+        intent=intent(), state=state(), feature=feature(), quote=quote(), decision_time=NOW
+    )
+    assert first.authorization is not None
+    reservation = gate.reservations[0]
+    altered = reservation
+    if changed_field == "instrument":
+        altered = replace(reservation, instrument=QQQ)
+    elif changed_field == "intent_identity":
+        altered = replace(reservation, intent_identity="different-opportunity")
+    elif changed_field == "quantity":
+        altered = replace(reservation, quantity=Decimal("1"))
+    else:
+        altered = replace(reservation, side=OrderSide.SELL)
+    positions = (
+        (OpenLongPosition(SPY, Decimal("5"), "position-1"),) if changed_field == "side" else ()
+    )
+    snapshot = (
+        feature(dataset_id="dataset-2")
+        if changed_field == "instrument"
+        else feature(instrument=QQQ)
+    )
+    second = gate.admit(
+        intent=intent(snapshot),
+        state=state(positions=positions, outstanding=(altered,)),
+        feature=snapshot,
+        quote=quote(instrument=snapshot.instrument),
+        decision_time=NOW,
+    )
+    assert second.authorization is None
+    assert RiskRejectionReason.INCONSISTENT_OPERATIONAL_STATE in reasons(second.decision)
+    assert gate.reservations == (reservation,)
+
+
+@pytest.mark.parametrize("signal_type", [SignalType.LONG_ENTRY, SignalType.EXIT])
+@pytest.mark.parametrize("changed_field", ["reason", "threshold", "maximum_feature_age"])
+def test_self_contradictory_signal_rule_evidence_cannot_authorize(
+    signal_type: SignalType, changed_field: str
+) -> None:
+    snapshot = feature(value=Decimal("-2") if signal_type is SignalType.LONG_ENTRY else Decimal(1))
+    original = intent(snapshot, signal_type=signal_type)
+    altered = original.source_signal
+    if changed_field == "reason":
+        altered = replace(
+            altered,
+            reason=SignalReason.EXIT_THRESHOLD
+            if signal_type is SignalType.LONG_ENTRY
+            else SignalReason.ENTRY_THRESHOLD,
+        )
+    elif changed_field == "maximum_feature_age":
+        altered = replace(altered, maximum_feature_age=timedelta(seconds=1))
+    elif signal_type is SignalType.LONG_ENTRY:
+        altered = replace(altered, entry_threshold=Decimal("-3"))
+    else:
+        altered = replace(altered, exit_threshold=Decimal("2"))
+    positions = (
+        (OpenLongPosition(SPY, Decimal("5"), "position-1"),)
+        if signal_type is SignalType.EXIT
+        else ()
+    )
+    decision = decide(
+        replace(original, source_signal=altered),
+        supporting_feature=snapshot,
+        risk_state=state(positions=positions),
+    )
+    assert decision.status is RiskDecisionStatus.REJECTED
+    assert RiskRejectionReason.LINEAGE_MISMATCH in reasons(decision)

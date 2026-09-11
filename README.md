@@ -95,7 +95,7 @@ flowchart TD
     E --> H["Paper OrderIntent"]
     H --> I["Independent Risk Decision"]
     I --> J["Atomic Admission + Reservation"]
-    J -. future grant .-> O["Paper Broker Adapter"]
+    J -. future submission revalidation .-> O["Paper Broker Adapter"]
 
     K["News / Filings / Events"] -. future .-> L["Semantic Event Classifier"]
     L -. typed EventRiskState .-> I
@@ -576,10 +576,13 @@ P2A adds provider-neutral paper market/DAY intents with operator-declared whole-
 signal proposes
 risk authorizes or rejects
 gate admits and reserves once
-future broker obeys the grant
+one application claim records consumption
+future broker requires submission-time revalidation
 ```
 
-P2A has no live data, broker connection, external submission, persistence, restart reconciliation, cash, buying power, P&L, portfolio accounting, or live-capital authority. Disabled trading and the kill switch freeze both entry and exit automation for this milestone; they are not a final liquidation policy.
+P2A has no live data, broker connection, external submission, persistence, restart reconciliation, cash, buying power, P&L, portfolio accounting, or live-capital authority. Disabled trading and the kill switch freeze new entry and exit admissions for this milestone; they are not a liquidation mechanism and do not revoke existing claims.
+
+The claim proves admission-time authorization only: it has no expiry and does not revalidate later controls, policy, or freshness. Reservations never release, including after claim or a reported fill. P2A cannot support external submission or a continuous entry/fill/exit cycle. See [the risk model](docs/RISK_MODEL.md) for these bounded guarantees and [the adversarial closure](docs/P2A_SAFETY_REVIEW.md) for review evidence.
 
 ---
 

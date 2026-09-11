@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from shadow.domain import Quote, QuoteMarketState
 from shadow.features import FeatureSnapshot, FeatureState
-from shadow.strategies import SignalType
+from shadow.strategies import SignalReason, SignalType
 
 from .models import (
     OrderIntent,
@@ -30,8 +30,19 @@ def _decision_time(value: datetime) -> datetime:
 
 def _lineage_matches(intent: OrderIntent, feature: FeatureSnapshot) -> bool:
     signal = intent.source_signal
+    # Validate the rule claimed by the proposal, without generating a signal or
+    # giving strategy evidence any authority over the independent risk limits.
+    rule_matches = (
+        signal.reason is SignalReason.ENTRY_THRESHOLD
+        and signal.observed_feature_value <= signal.entry_threshold
+        if signal.signal_type is SignalType.LONG_ENTRY
+        else signal.reason is SignalReason.EXIT_THRESHOLD
+        and signal.observed_feature_value >= signal.exit_threshold
+    )
     return (
-        feature.instrument == signal.instrument
+        rule_matches
+        and signal.decision_time - signal.feature_observation_time <= signal.maximum_feature_age
+        and feature.instrument == signal.instrument
         and feature.feature_name is signal.feature_name
         and feature.input_value is signal.feature_input
         and feature.implementation_version == signal.feature_implementation_version
