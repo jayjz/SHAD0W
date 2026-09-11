@@ -23,12 +23,15 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 
 **P1A — trade reconstruction and historical-evaluation foundation: COMPLETE.** Immutable evaluation replays the canonical lifecycle trace without rerunning strategy or execution selection, pairs only matching filled entry/exit economic executions, retains unsuccessful and incomplete evidence, and fails closed on inconsistent causal, configuration, and accounting references. Completed ordinary trades expose gross/net results and returns; nonpositive-price outcomes remain explicit stress evidence outside ordinary aggregates. Currency-separated descriptive summaries never mix caller-declared denominations. An immutable manifest identifies the supplied bar, quote, opportunity, configuration, implementation, complete simulation evidence, caller-supplied code revision, and declared limitations. P1A adds no funded portfolio, compounding, FX, holdout, walk-forward, parameter-selection, benchmark, or profitability claim. No next P1 slice is authorized.
 
-## P2–P9 — evidence-gated directions
+## P2 — operational risk authority
 
-- **P2:** independent deterministic risk engine.
-- **P3:** deterministic regime classification.
-- **P4:** live-data shadow mode with no orders.
-- **P5:** Alpaca paper execution behind ports/adapters.
+- **P2A — minimal deterministic paper risk authority: COMPLETE.** Provider-neutral paper market/DAY intents retain source signals and operator-declared whole-unit quantity. A pure versioned risk policy evaluates explicit causal feature, quote, inventory/order, and operator-control evidence. A single-process gate makes first decisions authoritative, reserves instrument/capacity before exposing one grant, rejects exact duplicates and identity conflicts, and permits one dispatch claim only from a genuine gate-issued artifact. The scope excludes persistence, broker/account reconciliation, cash, buying power, P&L, portfolio accounting, and external submission.
+
+## P3–P9 — evidence-gated directions
+
+- **P3:** deterministic regime classification is deferred pending operational evidence.
+- **P4A:** live-data shadow mode with no orders is the smallest justified next milestone.
+- **P5A:** Alpaca paper execution may follow behind the P2A authorization boundary.
 - **P6:** asynchronous semantic event-risk classification with typed, time-bounded outputs.
 - **P7:** execution-quality and signal-decay research.
 - **P8:** additional strategy research.

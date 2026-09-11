@@ -1,17 +1,27 @@
 # Risk model
 
-## Authority
+## P2A authority
 
-Risk is a future independent deterministic engine, not strategy logic. A signal can propose an `OrderIntent`; only a `RiskDecision` can authorize, modify within predeclared policy, or reject it. No strategy, broker adapter, or future LLM may bypass a risk veto. Missing, stale, inconsistent, or invalid critical state fails closed to no trade.
+`shadow.risk` is the independent deterministic authorization boundary for the paper target. A strategy `Signal` remains a proposal. An `OrderIntent` adds provider-neutral operational semantics but still carries no submission authority. A historical `RiskDecision(AUTHORIZED)` is evidence only. The supported dispatch seam accepts a live, gate-issued `AuthorizedOrder`, which can be claimed once.
 
-P0.3's `Signal` is deliberately only a proposal with reconstructable feature evidence. It has no order fields or authority to size, execute, or authorize a trade.
+P2A supports long equity-style BUY entry and SELL full exit using only market/DAY semantics. `OperationalQuantityConfig` is separate from research `ExecutionEconomicsConfig`: the operator declares a finite quantity, and risk requires whole positive units within the policy maximum. The strategy never sizes. Fractional-share support may be introduced later at the operational/broker layer; whole units are a P2A restriction rather than a universal SHAD0W invariant.
 
-P0.4B's `LifecycleAction` and simulated lifecycle state are likewise not risk authorization or an order. They make the causal state consequence of already-legal strategy evidence explicit for research simulation, with no quantity, price, broker, or economic effect. A future risk component remains the independent authority to authorize or reject any execution intent in a full simulation or operational design.
+## Policy and evidence
 
-P0.4C/P0.5 compose the current lifecycle, deterministic execution, and downstream economics evidence as a research-simulation baseline only. They do not assert that every P0.3 signal would pass the future risk engine: temporary admission into lifecycle and a modeled quote-side fill are explicitly not production authorization. P0.5C's fixed quantity is an experiment assumption used only after fill resolution; it is not strategy sizing, risk sizing, an authorization, or evidence of cash/liquidity capacity. Changing quantity, currency, or fees cannot alter lifecycle or execution outcomes. The runner keeps the future risk seam at signal-to-lifecycle admission and adds no risk policy, limit, or authorization mechanism.
+`RiskPolicy` is immutable, versioned, and explicit about enabled state, allowed instruments, maximum quantity per order, maximum concurrent positions, and maximum signal, feature, quote, and operational-state ages. Construction has no trading-enabled default. P2A deliberately has no cash, equity, buying-power, notional, leverage, loss, P&L, VaR, Kelly, or dynamic-sizing rule because no authoritative account model exists.
 
-## Future control categories
+`RiskState` carries a declared operational scope and revision, inventory completeness, known open long positions, outstanding operational orders/authorizations, observation and availability times, and timestamped operator controls. Missing inventory is never flat. Trading disabled or an active kill switch rejects both entries and exits. This is an automation freeze for P2A, not a final emergency-liquidation policy.
 
-The architecture must accommodate exposure and position limits, maximum-loss constraints, catastrophic stops, stale-data vetoes, volatility controls, concurrent-position limits, session constraints, and portfolio reconciliation. These are architectural categories, not P0.0 parameter choices.
+The pure evaluator consumes an explicit decision time and performs no wall-clock, environment, filesystem, network, broker, or global-state lookup. Signal, feature, quote, state, and controls must not be future evidence. Freshness uses observation time; a recent availability time cannot refresh an old observation. Signal fields must match the supplied ready `FeatureSnapshot`. The quote must match the instrument, be available, be fresh, have positive sides, and not be crossed; a positive locked quote is permitted. Thus P0.5 stress-domain nonpositive prices cannot authorize an operational order.
 
-Production limits, percentages, loss budgets, and escalation policies require empirical evidence and explicit owner decisions. They must be versioned and captured in experiment or operational evidence when introduced.
+## Admission, duplicates, and capacity
+
+The business identity is a SHA-256 digest of a narrow ordered encoding of operational scope, instrument, strategy/configuration identity, signal type, and source-feature identity. Consumer/strategy-evaluation time and operational quantity are excluded. A separate payload fingerprint covers the full signal content, quantity and its configuration identity, target, market/DAY semantics, and intent time. Decimal encoding is canonical and independent of ambient context.
+
+The first gate decision for a business identity is authoritative. An exact delivery retry returns `duplicate_intent` evidence referencing that decision and cannot issue another grant. Changed quantity, operational configuration, or content under the identity returns `intent_identity_conflict`; later state or policy evidence cannot revive the source signal.
+
+For entry, a known position or any outstanding order for the instrument rejects. Known positions plus BUY reservations consume the concurrent-position limit. For exit, inventory must contain one known long position and requested quantity must equal it; missing, partial, and excess exits reject. Any outstanding order for the instrument rejects. An exit reservation does not free position capacity because only future authoritative reconciliation can establish closure.
+
+`RiskGate` holds one lock across prior-history inspection, effective-state evaluation, decision recording, reservation, and grant issuance. Rejected decisions create no reservation. Authorized decisions reserve before the artifact is exposed, and reservations do not expire. The one-use dispatch claim validates the gate-local token and recorded grant before returning the intent to a future paper adapter.
+
+P2A assumes exactly one gate owner for a declared scope. Its history, reservations, and token registry are in memory. It provides application authority discipline, not cryptographic isolation, distributed locking, restart-safe idempotency, or evidence that a newly started process matches the brokerage account. P4A must remain shadow-only; P5A will require broker-authoritative reconciliation and durable duplicate handling before paper submission is safe.

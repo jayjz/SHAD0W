@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P1A trade reconstruction and historical-evaluation foundation complete**
+**Current milestone: P2A minimal deterministic paper risk authority complete**
 
-**No further P1 implementation is authorized.**
+**P4A live-data shadow is the smallest justified next milestone and is not part of P2A.**
 
 Implemented so far:
 
@@ -73,7 +73,7 @@ Implemented so far:
 | Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
 | Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
 | Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
-| Risk engine                    | ⏳ Planned        | Independent deterministic trade authorization                                                         |
+| Paper risk authority           | ✅ P2A complete   | Deterministic fail-closed decisions, atomic reservations, and one-use dispatch grants                  |
 | Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
 | Alpaca paper execution         | ⏳ Planned        | Broker adapter behind stable contracts                                                                |
 | LLM event intelligence         | ⏳ Research-gated | Semantic event classification with observational authority only                                       |
@@ -89,23 +89,19 @@ flowchart TD
     C --> D["Strategy Hypothesis"]
     D --> E["Signal"]
 
-    E --> F["Chronological Timeline"]
-    F --> G["Lifecycle State Machine"]
+    E --> F["Chronological Research Simulation"]
+    F --> G["Modeled Execution + Evaluation"]
 
-    G --> H["Execution / Fill Model"]
-    H --> I["Independent Risk Engine"]
-    I --> J["Evidence + Evaluation"]
+    E --> H["Paper OrderIntent"]
+    H --> I["Independent Risk Decision"]
+    I --> J["Atomic Admission + Reservation"]
+    J -. future grant .-> O["Paper Broker Adapter"]
 
     K["News / Filings / Events"] -. future .-> L["Semantic Event Classifier"]
     L -. typed EventRiskState .-> I
 
     M["Historical Data"] --> A
     N["Live Market Data"] -. future .-> A
-    O["Alpaca Paper Adapter"] -. future .-> H
-
-    style H stroke-dasharray: 5 5
-    style I stroke-dasharray: 5 5
-    style J stroke-dasharray: 5 5
     style K stroke-dasharray: 5 5
     style L stroke-dasharray: 5 5
     style N stroke-dasharray: 5 5
@@ -125,7 +121,7 @@ execution obeys
 evaluation judges
 ```
 
-No LLM, strategy, broker adapter, or execution component is allowed to override the independent risk boundary once that layer is introduced.
+No LLM, strategy, broker adapter, or execution component may override the independent risk boundary.
 
 ---
 
@@ -325,7 +321,9 @@ SHAD0W/
 │   ├── features/        # Deterministic quantitative features
 │   ├── strategies/      # Explicit falsifiable hypotheses
 │   ├── simulation/      # Timeline and lifecycle semantics
-│   └── execution/       # Deterministic quote-side execution semantics
+│   ├── execution/       # Deterministic quote-side execution semantics
+│   ├── evaluation/      # Trade reconstruction and descriptive evidence
+│   └── risk/            # Paper intents, deterministic decisions, and admission authority
 │
 ├── tests/
 │   ├── fixtures/        # Deterministic synthetic market data
@@ -570,32 +568,22 @@ A profitable backtest remains evidence requiring validation, not proof of a dura
 
 ---
 
-### P2 — Independent deterministic risk engine ⏳
+### P2A — Minimal deterministic paper risk authority ✅
 
-Introduce authoritative risk controls independently of strategy logic.
-
-Planned categories include:
-
-* exposure limits;
-* position limits;
-* loss constraints;
-* catastrophic stops;
-* stale-data vetoes;
-* volatility controls;
-* concurrent-position constraints;
-* session rules;
-* portfolio reconciliation.
+P2A adds provider-neutral paper market/DAY intents with operator-declared whole-unit quantity; an immutable policy for allowlists, maximum quantity, concurrent positions, and freshness; explicit complete inventory/order/control state; and deterministic entry/full-exit decisions. A process-local gate makes the first decision for a business identity authoritative, reserves instrument and capacity before returning a one-use dispatch grant, rejects exact duplicates, and treats changed content under one identity as conflict.
 
 ```text
 signal proposes
-risk disposes
+risk authorizes or rejects
+gate admits and reserves once
+future broker obeys the grant
 ```
 
-No strategy or future LLM may override a risk rejection.
+P2A has no live data, broker connection, external submission, persistence, restart reconciliation, cash, buying power, P&L, portfolio accounting, or live-capital authority. Disabled trading and the kill switch freeze both entry and exit automation for this milestone; they are not a final liquidation policy.
 
 ---
 
-### P3 — Deterministic regime classification ⏳
+### P3 — Deterministic regime classification (deferred) ⏳
 
 Evaluate whether measurable market-state information improves the baseline.
 
@@ -622,7 +610,7 @@ The regime layer will be retained only if out-of-sample evidence demonstrates va
 
 ---
 
-### P4 — Live-data shadow mode ⏳
+### P4A — Live-data shadow mode ⏳
 
 Connect live market data behind the existing provider-neutral boundary.
 
@@ -639,7 +627,7 @@ This phase will measure latency, data quality, reconnect behavior, signal decay,
 
 ---
 
-### P5 — Alpaca paper execution ⏳
+### P5A — Alpaca paper execution ⏳
 
 Introduce the first broker adapter.
 
