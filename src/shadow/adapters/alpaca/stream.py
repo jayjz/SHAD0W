@@ -52,25 +52,36 @@ def _reference(payload: object) -> str:
     return hashlib.sha256(line(payload).encode("utf-8")).hexdigest()
 
 
+_OPTIONAL_SUBSCRIPTION_CHANNELS = (
+    "trades",
+    "updatedBars",
+    "dailyBars",
+    "statuses",
+    "lulds",
+    "corrections",
+    "cancelErrors",
+)
+
+
+class _SetupFailure(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _subscription_is_exact(frame: list[dict[str, object]], symbols: tuple[str, ...]) -> bool:
     if len(frame) != 1 or frame[0].get("T") != "subscription":
         return False
     message = frame[0]
-    return (
-        _string_set(message.get("bars")) == set(symbols)
-        and _string_set(message.get("quotes")) == set(symbols)
-        and all(
-            not _string_set(message.get(channel))
-            for channel in (
-                "trades",
-                "updatedBars",
-                "dailyBars",
-                "statuses",
-                "lulds",
-                "corrections",
-                "cancelErrors",
-            )
-        )
+    if "bars" not in message or "quotes" not in message:
+        return False
+    if _string_set(message["bars"]) != set(symbols):
+        return False
+    if _string_set(message["quotes"]) != set(symbols):
+        return False
+    return all(
+        channel not in message or not _string_set(message[channel])
+        for channel in _OPTIONAL_SUBSCRIPTION_CHANNELS
     )
 
 
@@ -82,10 +93,13 @@ def _string_set(value: object) -> set[str]:
     return set(value)
 
 
-async def _expect(socket: Socket, message: str) -> None:
-    frame = decode_frame(await asyncio.wait_for(socket.recv(), 5))
+async def _expect(socket: Socket, message: str, rejection_reason: str) -> None:
+    try:
+        frame = decode_frame(await asyncio.wait_for(socket.recv(), 5))
+    except (TypeError, ValueError):
+        raise _SetupFailure(rejection_reason) from None
     if frame != [{"T": "success", "msg": message}]:
-        raise ValueError("provider authentication/connection rejected")
+        raise _SetupFailure(rejection_reason)
 
 
 async def consume(
@@ -101,14 +115,19 @@ async def consume(
     symbols = symbols_checked(
         tuple(strategy.instrument.identifier for strategy in session.config.strategies)
     )
-    await _expect(socket, "connected")
+    await _expect(socket, "connected", "connection_rejected")
     await socket.send(
         json.dumps({"action": "auth", "key": credentials.key, "secret": credentials.secret})
     )
-    await _expect(socket, "authenticated")
+    await _expect(socket, "authenticated", "authentication_rejected")
     await socket.send(json.dumps({"action": "subscribe", "bars": symbols, "quotes": symbols}))
-    if not _subscription_is_exact(decode_frame(await asyncio.wait_for(socket.recv(), 5)), symbols):
-        raise ValueError("provider subscription differs from requested scope")
+    try:
+        acknowledgement = decode_frame(await asyncio.wait_for(socket.recv(), 5))
+        subscription_is_exact = _subscription_is_exact(acknowledgement, symbols)
+    except (TypeError, ValueError):
+        raise _SetupFailure("subscription_mismatch") from None
+    if not subscription_is_exact:
+        raise _SetupFailure("subscription_mismatch")
     writer.write(session.control("connected", clock()))
 
     while True:
@@ -193,11 +212,13 @@ async def run_live(
         pass
     except asyncio.CancelledError:
         raise
+    except _SetupFailure as failure:
+        if session.health not in (FeedHealth.FAILED, FeedHealth.STOPPED):
+            writer.write(session.control("failed", clock(), failure.reason))
+        raise ValueError("shadow stream failed; inspect sanitized evidence") from None
     except Exception:
         if session.health not in (FeedHealth.FAILED, FeedHealth.STOPPED):
-            writer.write(
-                session.control("failed", clock(), "invalid_provider_or_application_state")
-            )
+            writer.write(session.control("failed", clock(), "application_error"))
         raise ValueError("shadow stream failed; inspect sanitized evidence") from None
     finally:
         if session.health not in (FeedHealth.FAILED, FeedHealth.STOPPED):

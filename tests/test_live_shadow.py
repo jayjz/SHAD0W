@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 from shadow.adapters.alpaca.normalize import translate
-from shadow.adapters.alpaca.stream import DataCredentials, consume
+from shadow.adapters.alpaca.stream import (
+    DataCredentials,
+    _subscription_is_exact,
+    consume,
+    decode_frame,
+    run_live,
+)
 from shadow.application.evidence import (
     CaptureError,
     CaptureStatus,
@@ -564,6 +570,126 @@ class _FakeSocket:
 
     async def send(self, message: str) -> None:
         self.sent.append(message)
+
+
+class _FakeConnection:
+    def __init__(self, socket: _FakeSocket) -> None:
+        self.socket = socket
+
+    async def __aenter__(self) -> _FakeSocket:
+        return self.socket
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+def _subscription_acknowledgement(**channels: object) -> list[dict[str, object]]:
+    return decode_frame(line([{"T": "subscription", **channels}]))
+
+
+def test_subscription_acknowledgement_accepts_real_sparse_alpaca_frame() -> None:
+    acknowledgement = _subscription_acknowledgement(quotes=["AAPL"], bars=["AAPL"])
+
+    assert _subscription_is_exact(acknowledgement, ("AAPL",))
+
+
+def test_subscription_acknowledgement_accepts_explicit_empty_optional_channel() -> None:
+    acknowledgement = _subscription_acknowledgement(quotes=["AAPL"], bars=["AAPL"], trades=[])
+
+    assert _subscription_is_exact(acknowledgement, ("AAPL",))
+
+
+@pytest.mark.parametrize(
+    "channels",
+    [
+        {"quotes": ["AAPL"]},
+        {"bars": ["AAPL"]},
+        {"quotes": ["AAPL"], "bars": ["MSFT"]},
+        {"quotes": ["MSFT"], "bars": ["AAPL"]},
+        {"quotes": ["AAPL"], "bars": ["AAPL"], "trades": ["AAPL"]},
+    ],
+)
+def test_subscription_acknowledgement_rejects_missing_or_unexpected_scope(
+    channels: dict[str, object],
+) -> None:
+    acknowledgement = _subscription_acknowledgement(**channels)
+
+    assert not _subscription_is_exact(acknowledgement, ("AAPL",))
+
+
+@pytest.mark.parametrize("trades", [None, "AAPL", {"symbol": "AAPL"}, ["AAPL", 1]])
+def test_subscription_acknowledgement_rejects_malformed_present_optional_channel(
+    trades: object,
+) -> None:
+    acknowledgement = _subscription_acknowledgement(quotes=["AAPL"], bars=["AAPL"], trades=trades)
+
+    with pytest.raises(ValueError, match="invalid provider subscription acknowledgement"):
+        _subscription_is_exact(acknowledgement, ("AAPL",))
+
+
+def test_subscription_acknowledgement_rejects_duplicate_symbols() -> None:
+    acknowledgement = _subscription_acknowledgement(quotes=["AAPL", "AAPL"], bars=["AAPL"])
+
+    with pytest.raises(ValueError, match="duplicate provider subscription acknowledgement"):
+        _subscription_is_exact(acknowledgement, ("AAPL",))
+
+
+def test_subscription_acknowledgement_accepts_multiple_symbols_in_any_order() -> None:
+    acknowledgement = _subscription_acknowledgement(quotes=["MSFT", "AAPL"], bars=["AAPL", "MSFT"])
+
+    assert _subscription_is_exact(acknowledgement, ("AAPL", "MSFT"))
+
+
+@pytest.mark.parametrize(
+    ("frames", "reason"),
+    [
+        ([line([{"T": "success", "msg": "authenticated"}])], "connection_rejected"),
+        (
+            [
+                line([{"T": "success", "msg": "connected"}]),
+                line([{"T": "error", "msg": "unauthorized"}]),
+            ],
+            "authentication_rejected",
+        ),
+        (
+            [
+                line([{"T": "success", "msg": "connected"}]),
+                line([{"T": "success", "msg": "authenticated"}]),
+                line([{"T": "subscription", "quotes": ["AAPL"], "bars": ["MSFT"]}]),
+            ],
+            "subscription_mismatch",
+        ),
+    ],
+)
+def test_run_live_records_sanitized_setup_failure_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[str],
+    reason: str,
+) -> None:
+    socket = _FakeSocket(frames)
+    monkeypatch.setattr(
+        "websockets.asyncio.client.connect", lambda *args, **kwargs: _FakeConnection(socket)
+    )
+    shadow = session()
+    writer = EvidenceWriter(tmp_path / "setup-failure.jsonl", shadow.config)
+
+    try:
+        with pytest.raises(ValueError, match="sanitized evidence"):
+            asyncio.run(
+                run_live(
+                    shadow,
+                    DataCredentials("key", "secret"),
+                    writer,
+                    duration=1,
+                    feed="iex",
+                )
+            )
+    finally:
+        writer.close()
+
+    assert shadow.records[-1].action == "failed"
+    assert shadow.records[-1].disposition == reason
 
 
 def test_stream_uses_session_scope_for_auth_subscription_and_translation(tmp_path: Path) -> None:
