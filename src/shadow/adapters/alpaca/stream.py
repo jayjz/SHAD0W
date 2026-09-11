@@ -99,7 +99,7 @@ async def consume(
 ) -> None:
     """Authenticate, confirm exact scope, and process data in receive order."""
     symbols = symbols_checked(
-        tuple(config.instrument.identifier for config in session.config.strategies)
+        tuple(strategy.instrument.identifier for strategy in session.config.strategies)
     )
     await _expect(socket, "connected")
     await socket.send(
@@ -153,7 +153,7 @@ async def run_live(
         raise ValueError("duration must be within (0, 3600] seconds")
     if feed not in SUPPORTED_FEEDS or session.config.source != f"alpaca:{feed}":
         raise ValueError("feed and session source must match real-time iex or sip")
-    symbols_checked(tuple(config.instrument.identifier for config in session.config.strategies))
+    symbols_checked(tuple(strategy.instrument.identifier for strategy in session.config.strategies))
     from websockets.asyncio.client import connect
     from websockets.exceptions import ConnectionClosed
 

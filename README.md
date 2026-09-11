@@ -615,11 +615,11 @@ The regime layer will be retained only if out-of-sample evidence demonstrates va
 
 ### P4A — Alpaca live-data shadow ✅
 
-P4A adds a bounded, market-data-only Alpaca stock-stream command. It subscribes to explicit IEX/SIP symbols, translates provider JSON immediately into existing provider-neutral `Bar`/`Quote` values, converts minute-bar left-edge timestamps to SHAD0W interval ends, and uses application receipt as availability evidence. It retains structured JSONL shadow evidence and deterministic normalized replay.
+P4A adds a bounded, market-data-only Alpaca stock-stream command. It subscribes to explicit IEX/SIP symbols, translates provider JSON immediately into existing provider-neutral `Bar`/`Quote` values, converts minute-bar left-edge timestamps to SHAD0W interval ends, and uses application receipt as availability evidence. `shadow.live.v1` retains structured JSONL normalized market/control evidence that can be strictly reloaded and deterministically recomputed against persisted derived evidence. Terminal `stopped`/`failed` captures are complete; a valid interrupted prefix is explicitly incomplete, while corrupt interior evidence fails closed.
 
-Completed bars independently drive the existing feature and mean-reversion candidate pipeline per symbol. Quotes are not required to accumulate bars; a current quote is required only to make a candidate's risk inputs ready. Since P4A has no account adapter, a live candidate reports unavailable broker-authoritative operational state rather than pretending inventory is flat. Offline tests may use pure risk evaluation over explicitly supplied non-authoritative state; P4A never uses risk admission, creates an authorization, or reaches an execution interface.
+Completed bars independently drive the existing feature and mean-reversion candidate pipeline per symbol from `PositionState.FLAT` only. P4A is live flat-state candidate observation: it can observe entry candidates but neither infers a broker holding nor generates lifecycle-backed exits. Quotes are not required to accumulate bars; a current quote is required only to make a candidate's risk inputs ready. Since P4A has no account adapter, a live candidate reports unavailable broker-authoritative operational state rather than pretending inventory is flat. Offline tests may use pure risk evaluation over explicitly supplied non-authoritative state; P4A never uses risk admission, creates an authorization, or reaches an execution interface.
 
-Run a bounded session after setting the market-data-only credentials in `.env.example`'s documented variables:
+Run a bounded session after setting the documented credentials as process-environment variables. `.env.example` documents their names only; the application does not load `.env` automatically:
 
 ```powershell
 shadow-live-data --session-id example-2025-01-02 --code-revision <commit> --symbol AAPL --feed iex --duration-seconds 60 --evidence-path .\shadow-aapl.jsonl

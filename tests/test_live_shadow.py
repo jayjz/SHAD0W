@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -9,8 +11,16 @@ from pathlib import Path
 import pytest
 
 from shadow.adapters.alpaca.normalize import translate
-from shadow.adapters.alpaca.stream import DataCredentials
-from shadow.application.evidence import replay
+from shadow.adapters.alpaca.stream import DataCredentials, consume
+from shadow.application.evidence import (
+    CaptureError,
+    CaptureStatus,
+    EvidenceWriter,
+    line,
+    load_capture,
+    replay,
+    verify_capture,
+)
 from shadow.application.shadow import (
     FeedHealth,
     RiskObservabilityStatus,
@@ -270,6 +280,16 @@ def test_invalid_record_does_not_poison_later_valid_input() -> None:
     assert accepted.disposition == "accepted"
 
 
+def test_replay_retains_one_invalid_prefix_for_every_reason() -> None:
+    shadow = session()
+    first = shadow.invalid(at(0, 1), "malformed_frame", "bad-frame")
+    second = shadow.invalid(at(0, 2), "unexpected_message", "bad-message")
+
+    replayed = replay(shadow.config, (shadow.records[0], first, second))
+
+    assert replayed[-2:].__eq__((first, second))
+
+
 def test_replay_and_future_append_preserve_existing_records() -> None:
     shadow = session()
     shadow.accept(observation(quote(0)), "quote")
@@ -278,6 +298,340 @@ def test_replay_and_future_append_preserve_existing_records() -> None:
     assert replay(shadow.config, captured) == captured
     shadow.accept(observation(bar(3, "91")), "future")
     assert shadow.records[: len(captured)] == captured
+
+
+def _write_capture(path: Path, shadow: ShadowSession) -> None:
+    writer = EvidenceWriter(path, shadow.config)
+    try:
+        for record in shadow.records:
+            writer.write(record)
+    finally:
+        writer.close()
+
+
+def _complete_capture(*, state: RiskState | None = None) -> ShadowSession:
+    shadow = session(state=state)
+    _two_bars_then_quote_then_final_bar(shadow)
+    shadow.control("stopped", at(4), "test_complete")
+    return shadow
+
+
+def test_disk_capture_round_trip_recomputes_derived_evidence_and_is_terminal(
+    tmp_path: Path,
+) -> None:
+    state = RiskState(
+        "shadow-test",
+        "supplied-offline-state",
+        1,
+        True,
+        (),
+        (),
+        at(3),
+        at(3),
+        OperatorControls(True, False, at(3), at(3)),
+    )
+    shadow = _complete_capture(state=state)
+    path = tmp_path / "complete.jsonl"
+    _write_capture(path, shadow)
+
+    capture = load_capture(path)
+    replayed = verify_capture(capture)
+
+    assert capture.status is CaptureStatus.COMPLETE_STOPPED
+    assert replayed.records == shadow.records
+    assert replayed.records[-2].feature is not None
+    assert replayed.records[-2].signal is not None
+    assert replayed.records[-2].risk_observability is not None
+    with pytest.raises(ValueError, match="terminal shadow session"):
+        replayed.accept(observation(bar(4, "92")))
+
+
+def test_clean_incomplete_disk_prefix_replays_and_can_append(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.accept(observation(bar(0, "100")), "bar-0")
+    path = tmp_path / "incomplete.jsonl"
+    _write_capture(path, shadow)
+
+    capture = load_capture(path)
+    replayed = verify_capture(capture)
+    prefix = replayed.records
+    replayed.accept(observation(bar(1, "101")), "bar-1")
+
+    assert capture.status is CaptureStatus.INCOMPLETE
+    assert capture.diagnostic == "capture ended without terminal evidence"
+    assert replayed.records[: len(prefix)] == prefix
+
+
+def test_truncated_final_line_recovers_verified_prefix_as_incomplete(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.accept(observation(quote(0)), "quote")
+    path = tmp_path / "truncated.jsonl"
+    _write_capture(path, shadow)
+    with path.open("a", encoding="utf-8") as evidence:
+        evidence.write('{"sequence":2')
+
+    capture = load_capture(path)
+
+    assert capture.status is CaptureStatus.INCOMPLETE
+    assert capture.diagnostic == "truncated final JSON line"
+    assert verify_capture(capture).records == shadow.records
+
+
+def test_truncation_after_terminal_record_is_never_claimed_complete(tmp_path: Path) -> None:
+    shadow = _complete_capture()
+    path = tmp_path / "terminal-truncated.jsonl"
+    _write_capture(path, shadow)
+    with path.open("a", encoding="utf-8") as evidence:
+        evidence.write('{"interrupted"')
+
+    capture = load_capture(path)
+
+    assert capture.status is CaptureStatus.INCOMPLETE
+    assert capture.diagnostic == "truncated final JSON line"
+    replayed = verify_capture(capture)
+    assert replayed.records == shadow.records
+    with pytest.raises(ValueError, match="terminal shadow session"):
+        replayed.accept(observation(bar(4, "92")))
+
+
+def test_malformed_complete_interior_line_is_invalid(tmp_path: Path) -> None:
+    shadow = _complete_capture()
+    path = tmp_path / "corrupt.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join((lines[0], "{not-json", *lines[1:])) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureError, match="malformed complete record"):
+        load_capture(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda item: item.__setitem__("schema", "shadow.live.v999"), "unsupported capture schema"),
+        (lambda item: item.__setitem__("config", {}), "invalid capture config shape"),
+        (
+            lambda item: item["config"].pop("maximum_bar_age"),
+            "invalid capture config shape",
+        ),
+        (
+            lambda item: item["config"].__setitem__("maximum_quote_age", "not-a-duration"),
+            "invalid capture config",
+        ),
+        (
+            lambda item: item["config"]["strategies"][0].__setitem__("feature_name", "unknown"),
+            "invalid capture config",
+        ),
+    ],
+)
+def test_capture_header_validation(tmp_path: Path, mutate: object, match: str) -> None:
+    shadow = _complete_capture()
+    path = tmp_path / "bad-header.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert callable(mutate)
+    mutate(header)
+    path.write_text("\n".join((line(header), *lines[1:])) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureError, match=match):
+        load_capture(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda item: item.__setitem__("sequence", 3), "non-sequential"),
+        (lambda item: item.__setitem__("session_id", "other-session"), "differs from config"),
+        (lambda item: item.__setitem__("health", "unknown"), "invalid record health"),
+        (lambda item: item.__setitem__("action", "unknown"), "invalid record action"),
+        (lambda item: item["observation"].__setitem__("close", "not-a-decimal"), "invalid bar"),
+        (lambda item: item["observation"].__setitem__("close", "NaN"), "invalid bar"),
+        (
+            lambda item: item["observation"].__setitem__("availability_semantics", "unknown"),
+            "invalid bar",
+        ),
+        (
+            lambda item: item["observation"].__setitem__(
+                "availability_time", "2025-01-02T14:31:01"
+            ),
+            "invalid bar",
+        ),
+    ],
+)
+def test_capture_input_validation(tmp_path: Path, mutate: object, match: str) -> None:
+    shadow = _complete_capture()
+    path = tmp_path / "bad-record.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[2])
+    assert callable(mutate)
+    mutate(record)
+    lines[2] = line(record)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureError, match=match):
+        load_capture(path)
+
+
+def test_invalid_record_disposition_is_rejected_from_disk(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.invalid(at(0, 1), "malformed_frame", "bad-frame")
+    shadow.control("stopped", at(1), "test_complete")
+    path = tmp_path / "invalid-disposition.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[2])
+    record["disposition"] = "malformed_frame"
+    lines[2] = line(record)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureError, match="invalid observation disposition"):
+        load_capture(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("feature", {"value": "999"}),
+        ("signal", {"reason": "exit_threshold"}),
+        ("health", "stale"),
+        ("observation", {"invalid": "observation"}),
+    ],
+)
+def test_verification_rejects_tampered_derived_or_normalized_evidence(
+    tmp_path: Path, field: str, replacement: object
+) -> None:
+    shadow = _complete_capture()
+    path = tmp_path / "tampered.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-2])
+    record[field] = replacement
+    lines[-2] = line(record)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    if field == "observation":
+        with pytest.raises(CaptureError, match="invalid quote shape"):
+            load_capture(path)
+        return
+    capture = load_capture(path)
+    with pytest.raises(CaptureError, match="differs"):
+        verify_capture(capture)
+
+
+def test_disk_replay_preserves_controls_and_nonforward_observations(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.accept(observation(quote(0)), "quote-0")
+    shadow.accept(observation(quote(0, bid="98")), "quote-variant")
+    shadow.accept(observation(bar(1, "100")), "bar-1")
+    shadow.accept(observation(bar(1, "100")), "bar-1")
+    delayed_raw = bar(0, "100")
+    shadow.accept(
+        translate(delayed_raw, received_at=at(2, 32), symbols=("AAPL",), feed="iex"),
+        "bar-old",
+    )
+    shadow.invalid(at(2, 33), "unexpected_message", "bad-message")
+    shadow.control("tick", at(7), "receive_timeout")
+    shadow.control("disconnected", at(7, 1), "test_disconnect")
+    shadow.control("connected", at(7, 2), "test_reconnect")
+    shadow.control("failed", at(7, 3), "test_complete")
+    path = tmp_path / "all-dispositions.jsonl"
+    _write_capture(path, shadow)
+
+    capture = load_capture(path)
+    replayed = verify_capture(capture)
+
+    assert capture.status is CaptureStatus.COMPLETE_FAILED
+    assert replayed.records == shadow.records
+    assert {record.disposition for record in replayed.records} >= {
+        "duplicate",
+        "same_time_variant",
+        "out_of_order",
+        "invalid:unexpected_message",
+    }
+
+
+class _FakeSocket:
+    def __init__(self, frames: list[str]) -> None:
+        self.frames = frames
+        self.sent: list[str] = []
+
+    async def recv(self) -> str:
+        if not self.frames:
+            raise OSError("test transport ended")
+        return self.frames.pop(0)
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+
+def test_stream_uses_session_scope_for_auth_subscription_and_translation(tmp_path: Path) -> None:
+    bar_payload = bar(0, "100")
+    bar_payload.pop("received")
+    for field in ("o", "h", "l", "c", "v"):
+        value = bar_payload[field]
+        assert isinstance(value, Decimal)
+        bar_payload[field] = float(value)
+    quote_payload = quote(0)
+    quote_payload.pop("received")
+    for field in ("bp", "ap", "bs", "as"):
+        value = quote_payload[field]
+        assert isinstance(value, Decimal)
+        quote_payload[field] = float(value)
+    socket = _FakeSocket(
+        [
+            line([{"T": "success", "msg": "connected"}]),
+            line([{"T": "success", "msg": "authenticated"}]),
+            line(
+                [
+                    {
+                        "T": "subscription",
+                        "bars": ["AAPL"],
+                        "quotes": ["AAPL"],
+                        "trades": [],
+                        "updatedBars": [],
+                        "dailyBars": [],
+                        "statuses": [],
+                        "lulds": [],
+                        "corrections": [],
+                        "cancelErrors": [],
+                    }
+                ]
+            ),
+            json.dumps([quote_payload, bar_payload]),
+        ]
+    )
+    shadow = ShadowSession(config())
+    path = tmp_path / "stream.jsonl"
+    writer = EvidenceWriter(path, shadow.config)
+    times = iter((at(0), at(2)))
+
+    try:
+        with pytest.raises(OSError, match="test transport ended"):
+            asyncio.run(
+                consume(
+                    socket,
+                    shadow,
+                    DataCredentials("key", "secret"),
+                    writer,
+                    feed="iex",
+                    clock=lambda: next(times),
+                )
+            )
+    finally:
+        writer.close()
+
+    assert [json.loads(message)["action"] for message in socket.sent] == ["auth", "subscribe"]
+    subscription = json.loads(socket.sent[1])
+    assert subscription == {"action": "subscribe", "bars": ["AAPL"], "quotes": ["AAPL"]}
+    assert [record.disposition for record in shadow.records] == [
+        "connected",
+        "accepted",
+        "accepted",
+    ]
+    assert isinstance(shadow.records[1].observation, Quote)
+    assert isinstance(shadow.records[2].observation, Bar)
 
 
 def test_optional_pure_risk_evaluation_never_creates_admission_artifact() -> None:
@@ -307,4 +661,15 @@ def test_missing_credentials_and_no_gate_or_trading_imports() -> None:
     p4a = Path("src/shadow/adapters/alpaca/stream.py").read_text(encoding="utf-8")
     composition = Path("src/shadow/application/shadow.py").read_text(encoding="utf-8")
     assert "RiskGate" not in composition and "claim_for_dispatch" not in composition
-    assert "TradingClient" not in p4a and "submit_order" not in p4a
+    assert "AuthorizedOrder" not in composition and "AuthorizedOrder" not in p4a
+    assert "config.instrument" not in p4a
+    assert all(
+        forbidden not in p4a
+        for forbidden in (
+            "TradingClient",
+            "submit_order",
+            "cancel_order",
+            "replace_order",
+            "/account",
+        )
+    )
