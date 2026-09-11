@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import TextIO
 
 from shadow.application.shadow import ShadowConfig, ShadowRecord, ShadowSession
-from shadow.domain.market import AvailabilitySemantics, Bar, BarInterval, Instrument, Provenance, Quote
 
 
 def encode(value: object) -> object:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {field.name: encode(getattr(value, field.name)) for field in dataclasses.fields(value)}
+        return {
+            field.name: encode(getattr(value, field.name)) for field in dataclasses.fields(value)
+        }
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
@@ -58,35 +59,8 @@ def replay(config: ShadowConfig, captured: Iterable[ShadowRecord]) -> tuple[Shad
     for record in captured:
         if record.observation is not None:
             session.accept(record.observation, record.delivery_reference)
+        elif record.action == "observation":
+            session.invalid(record.time, record.disposition, record.delivery_reference)
         else:
-            session.control(record.action, record.time, record.reason)
+            session.control(record.action, record.time, record.disposition)
     return session.records
-
-
-def decode_observation(value: dict[str, object]) -> Bar | Quote:
-    """Read the normalized observation portion of a v1 JSONL evidence record."""
-    instrument_data = value["instrument"]
-    provenance_data = value["provenance"]
-    if not isinstance(instrument_data, dict) or not isinstance(provenance_data, dict):
-        raise ValueError("invalid normalized observation")
-    instrument = Instrument(str(instrument_data["identifier"]))
-    provenance = Provenance(**provenance_data)
-    observation = datetime.fromisoformat(str(value["observation_time"]))
-    availability = datetime.fromisoformat(str(value["availability_time"]))
-    semantics = AvailabilitySemantics(str(value["availability_semantics"]))
-
-    def decimal(name: str) -> Decimal:
-        return Decimal(str(value[name]))
-
-    def optional(name: str) -> Decimal | None:
-        return None if value[name] is None else decimal(name)
-
-    if "interval" in value:
-        interval = value["interval"]
-        if not isinstance(interval, dict):
-            raise ValueError("invalid normalized interval")
-        return Bar(instrument, BarInterval(timedelta(microseconds=interval["duration"])),
-                   observation, availability, semantics, decimal("open"), decimal("high"),
-                   decimal("low"), decimal("close"), optional("volume"), provenance)
-    return Quote(instrument, decimal("bid_price"), decimal("ask_price"), optional("bid_size"),
-                 optional("ask_size"), observation, availability, semantics, provenance)

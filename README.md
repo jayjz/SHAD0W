@@ -55,9 +55,9 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P2A minimal deterministic paper risk authority complete**
+**Current milestone: P2A deterministic paper risk authority and P4A Alpaca live-data shadow complete**
 
-**P4A live-data shadow is the smallest justified next milestone and is not part of P2A.**
+**P5A Alpaca paper execution remains separately gated and is not part of P4A.**
 
 Implemented so far:
 
@@ -74,7 +74,7 @@ Implemented so far:
 | Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
 | Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
 | Paper risk authority           | ✅ P2A complete   | Deterministic fail-closed decisions, atomic reservations, and one-use dispatch grants                  |
-| Live market data               | ⏳ Planned        | Shadow mode only before execution                                                                     |
+| Live market data               | ✅ P4A complete   | Alpaca IEX/SIP shadow capture, causal translation, deterministic candidates, no order path          |
 | Alpaca paper execution         | ⏳ Planned        | Broker adapter behind stable contracts                                                                |
 | LLM event intelligence         | ⏳ Research-gated | Semantic event classification with observational authority only                                       |
 
@@ -613,20 +613,19 @@ The regime layer will be retained only if out-of-sample evidence demonstrates va
 
 ---
 
-### P4A — Live-data shadow mode ⏳
+### P4A — Alpaca live-data shadow ✅
 
-Connect live market data behind the existing provider-neutral boundary.
+P4A adds a bounded, market-data-only Alpaca stock-stream command. It subscribes to explicit IEX/SIP symbols, translates provider JSON immediately into existing provider-neutral `Bar`/`Quote` values, converts minute-bar left-edge timestamps to SHAD0W interval ends, and uses application receipt as availability evidence. It retains structured JSONL shadow evidence and deterministic normalized replay.
 
-Shadow mode will:
+Completed bars independently drive the existing feature and mean-reversion candidate pipeline per symbol. Quotes are not required to accumulate bars; a current quote is required only to make a candidate's risk inputs ready. Since P4A has no account adapter, a live candidate reports unavailable broker-authoritative operational state rather than pretending inventory is flat. Offline tests may use pure risk evaluation over explicitly supplied non-authoritative state; P4A never uses risk admission, creates an authorization, or reaches an execution interface.
 
-* consume real-time observations;
-* calculate features;
-* generate signals;
-* exercise timeline/lifecycle logic;
-* produce hypothetical execution evidence;
-* submit no orders.
+Run a bounded session after setting the market-data-only credentials in `.env.example`'s documented variables:
 
-This phase will measure latency, data quality, reconnect behavior, signal decay, and disagreement between research assumptions and live conditions.
+```powershell
+shadow-live-data --session-id example-2025-01-02 --code-revision <commit> --symbol AAPL --feed iex --duration-seconds 60 --evidence-path .\shadow-aapl.jsonl
+```
+
+The command prints `SHADOW MODE — NO ORDER SUBMISSION`. It contains no Alpaca trading client, account endpoint, submit/cancel/replace operation, or broker state claim.
 
 ---
 

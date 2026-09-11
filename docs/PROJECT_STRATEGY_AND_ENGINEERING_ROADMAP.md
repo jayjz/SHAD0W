@@ -30,8 +30,8 @@ SHAD0W advances only when evidence justifies the next gate. A phase is not a com
 ## P3–P9 — evidence-gated directions
 
 - **P3:** deterministic regime classification is deferred pending operational evidence.
-- **P4A:** live-data shadow mode with no orders is the smallest justified next milestone.
-- **P5A:** Alpaca paper execution may follow only after submission-time control/policy/freshness revalidation, durable duplicate handling, and broker-authoritative reservation reconciliation extend the P2A admission boundary. P2A claims alone are insufficient for external submission and reservations do not support continuous operation.
+- **P4A — Alpaca live-data shadow: COMPLETE.** The market-data-only WebSocket adapter translates explicit IEX/SIP subscriptions directly to provider-neutral minute `Bar`/`Quote` values. Bar left-edge timestamps become interval ends and application receipt becomes `SYSTEM_RECEIVED` availability. Bounded append-only sessions retain accepted, duplicate, same-time-variant, delayed, and invalid dispositions; completed bars drive deterministic feature/signal candidates per symbol, while quote readiness is required only for a candidate's risk observation. No broker/account state is fabricated, no gate is used, no authorization or order is emitted, and normalized captures replay deterministically.
+- **P5A:** Alpaca paper execution remains separately gated. It requires submission-time control/policy/freshness revalidation, durable duplicate handling, broker-authoritative account/order/position reconciliation, and a safe reservation lifecycle. P2A claims alone are insufficient for external submission and reservations do not support continuous operation.
 - **P6:** asynchronous semantic event-risk classification with typed, time-bounded outputs.
 - **P7:** execution-quality and signal-decay research.
 - **P8:** additional strategy research.
