@@ -2,7 +2,9 @@
 
 ## Mission and phase
 
-SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, P0.4A/P0.4C establish chronological and lifecycle-authoritative simulation semantics, P0.5 establishes bounded execution economics, P1A establishes manifest-bound trade reconstruction and descriptive historical evidence, and P2A establishes the minimal deterministic paper risk authority.** P2A is limited to provider-neutral intents, explicit fresh state, long equity-style entry/full-exit rules, atomic single-process admission/reservation, and a one-use application dispatch capability. It adds no live data, broker connection, external order submission, persistent idempotency, reconciliation, account/portfolio model, or live-capital authority. P4A live-data shadow is the next proposed slice and requires separate authorization.
+SHAD0W is a deterministic laboratory for testing whether precisely specified market hypotheses have a reproducible, executable, risk-adjusted edge after realistic costs. **P0.2B is closed by composition of P0.2A z-score evidence, P0.3 defines one unvalidated signal-only hypothesis, P0.4A/P0.4C establish chronological and lifecycle-authoritative simulation semantics, P0.5 establishes bounded execution economics, P1A establishes manifest-bound trade reconstruction and descriptive historical evidence, P2A establishes the minimal deterministic paper risk authority, and P4A Alpaca live-data shadow is complete.** P2A is limited to provider-neutral intents, explicit fresh state, long equity-style entry/full-exit rules, atomic single-process admission/reservation, and a one-use application dispatch capability. It adds no broker connection, external order submission, persistent idempotency, reconciliation, account/portfolio model, or live-capital authority. P4A adds market data and observational candidates only.
+
+P5A Alpaca PAPER execution is explicitly authorized as the next engineering direction. **The current P5A.0 slice implements documentation and CI only**: [execution contract](docs/P5A_EXECUTION_CONTRACT.md), [ADR 0005](docs/decisions/0005-paper-execution-recovery.md), and [bounded follow-up plan](docs/P5A_EXECUTION_PLAN.md). Broker execution remains unimplemented. This slice permits no trading/account endpoint connection, order submission, trading credentials, Alpaca SDK, or new HTTP dependency. Follow-up implementation and an operator-approved canary run must satisfy the contract before any paper dispatch. Live-capital trading remains prohibited.
 
 ## Source of truth
 
@@ -18,7 +20,7 @@ SHAD0W is a deterministic laboratory for testing whether precisely specified mar
 
 - Same data, configuration, implementation, and seed must reproduce results unless documented otherwise.
 - A decision may use only information available at its modeled time. Fail closed on missing, stale, invalid, or inconsistent critical state.
-- Signals propose; the independent risk engine authorizes or rejects. No strategy may bypass risk.
+- Signals propose; the independent risk engine authorizes or rejects; execution obeys; broker reconciliation establishes operational truth. No strategy may bypass risk.
 - Costs and execution feasibility belong in evaluation. A profitable backtest is evidence requiring validation, not proof of a durable edge.
 - Core research must not depend on a broker, provider SDK, or LLM. LLMs may classify unstructured inputs later, but never hold trading or risk authority.
 - Structured evidence—not conversation history—must eventually reconstruct material decisions and experiments.
@@ -29,7 +31,7 @@ SHAD0W is a deterministic laboratory for testing whether precisely specified mar
 - Use typed, provider-neutral domain contracts at boundaries. Do not let Pandas, HTTP, broker, or LLM response objects escape their adapters.
 - Document and test behavior with the change. As each invariant becomes executable, add focused regression or property tests.
 - Experiments require immutable data identity, configuration, code revision, seed where applicable, and recorded limitations. Never silently change strategy logic, parameters, or evaluation configuration.
-- No live trading, order submission, or broker integration is permitted in current milestones.
+- No live-capital trading or live trading endpoint support is permitted. P5A paper integration is bounded by the explicitly assigned follow-up slice; P5A.0 adds only documentation and CI. Preserve the separate P4A market-data-only command.
 - Distinguish environment/dependency failures from product failures in reports and commits.
 
 ## Git and verification

@@ -8,7 +8,7 @@ SHAD0W is an experimental quantitative research platform built around a simple r
 
 The project is designed to move from raw market observations to reproducible strategy evidence while explicitly modeling information availability, signal causality, execution timing, lifecycle state, transaction friction, and eventually independent risk controls.
 
-SHAD0W is currently a **research simulator under active development**. It does not submit live orders, connect to a broker, or claim that its initial strategy is profitable.
+SHAD0W is currently a **research simulator with live market-data shadow observation**. It has no broker trading/account connection or order submission and makes no claim that its initial strategy is profitable.
 
 ---
 
@@ -57,7 +57,7 @@ Automation comes after evidence.
 
 **Current milestone: P2A deterministic paper risk authority and P4A Alpaca live-data shadow complete**
 
-**P5A Alpaca paper execution remains separately gated and is not part of P4A.**
+**P5A.0 is the documentation and CI foundation for explicitly authorized Alpaca PAPER execution. Broker execution remains unimplemented; live-capital trading remains prohibited.**
 
 Implemented so far:
 
@@ -75,7 +75,7 @@ Implemented so far:
 | Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
 | Paper risk authority           | ✅ P2A complete   | Deterministic fail-closed decisions, atomic reservations, and one-use dispatch grants                  |
 | Live market data               | ✅ P4A complete   | Alpaca IEX/SIP shadow capture, causal translation, deterministic candidates, no order path          |
-| Alpaca paper execution         | ⏳ Planned        | Broker adapter behind stable contracts                                                                |
+| Alpaca paper execution         | ⏳ P5A.0 foundation | Execution contract, ADR, follow-up tickets and CI; no broker execution yet                              |
 | LLM event intelligence         | ⏳ Research-gated | Semantic event classification with observational authority only                                       |
 
 ---
@@ -101,10 +101,9 @@ flowchart TD
     L -. typed EventRiskState .-> I
 
     M["Historical Data"] --> A
-    N["Live Market Data"] -. future .-> A
+    N["Live Market Data"] --> A
     style K stroke-dasharray: 5 5
     style L stroke-dasharray: 5 5
-    style N stroke-dasharray: 5 5
     style O stroke-dasharray: 5 5
 ```
 
@@ -118,6 +117,7 @@ timeline establishes causal legality
 lifecycle establishes simulated state
 risk authorizes
 execution obeys
+broker reconciliation establishes operational truth (P5A design)
 evaluation judges
 ```
 
@@ -631,20 +631,23 @@ The command prints `SHADOW MODE — NO ORDER SUBMISSION`. It contains no Alpaca 
 
 ### P5A — Alpaca paper execution ⏳
 
-Introduce the first broker adapter.
+P5A.0 establishes the [execution contract](docs/P5A_EXECUTION_CONTRACT.md),
+[ADR 0005](docs/decisions/0005-paper-execution-recovery.md),
+[dependency-ordered implementation tickets](docs/P5A_EXECUTION_PLAN.md), and
+Python 3.12 CI. It introduces no executable broker path, trading credentials,
+account connection, SDK, or HTTP dependency.
 
-Paper execution must handle:
+The future canary is Alpaca paper only: one operator-approved liquid equity, one
+whole share, market/DAY, regular hours, one concurrent position, and a durable
+daily submission ceiling. A local transactional journal, submission-time risk
+revalidation, and broker-authoritative reconciliation must precede activation.
+Uncertain submission halts new orders; client IDs support reconciliation and never
+justify blind POST retries. Broker SDK types remain at adapter boundaries.
 
-* broker-authoritative state;
-* rejected orders;
-* partial fills;
-* late fills;
-* disconnects;
-* retries;
-* duplicate submissions;
-* restart/reconciliation behavior.
-
-Broker SDK types remain outside SHAD0W's core domain.
+Follow-up tickets must prove restart recovery, reservation transitions, and live
+entry/lifecycle-backed exit behavior before a separately approved supervised run.
+P4A remains a separate market-data-only command. No live capital or strategy
+validation is authorized or claimed.
 
 ---
 
@@ -794,6 +797,9 @@ uv run mypy src tests
 git diff --check
 ```
 
+[GitHub Actions CI](.github/workflows/ci.yml) runs these checks on Python 3.12
+for pushes and pull requests without broker credentials or broker connections.
+
 > **Windows note:** some local environments have exhibited a `uv` script-trampoline canonicalization issue for direct console-script invocation. During affected runs, equivalent `.venv\Scripts\python.exe -m ...` commands are used to distinguish environment-wrapper failures from project failures.
 
 ---
@@ -810,6 +816,8 @@ The README is the project overview. The detailed contracts live in `docs/`.
 | [`docs/RESEARCH_METHOD.md`](docs/RESEARCH_METHOD.md)                                                   | Scientific method, temporal discipline, and falsification rules |
 | [`docs/EVALUATION.md`](docs/EVALUATION.md)                                                             | Evaluation philosophy and planned evidence                      |
 | [`docs/RISK_MODEL.md`](docs/RISK_MODEL.md)                                                             | Independent risk authority and future controls                  |
+| [`docs/P5A_EXECUTION_CONTRACT.md`](docs/P5A_EXECUTION_CONTRACT.md)                                     | Paper canary authority, journal, dispatch and recovery requirements |
+| [`docs/P5A_EXECUTION_PLAN.md`](docs/P5A_EXECUTION_PLAN.md)                                             | Dependency-ordered bounded follow-up tickets and activation gate |
 | [`docs/PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md`](docs/PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md) | Canonical execution roadmap                                     |
 | [`docs/decisions/`](docs/decisions/)                                                                   | Architectural decision records                                  |
 

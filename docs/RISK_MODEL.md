@@ -33,3 +33,35 @@ For entry, a known position or any outstanding order for the instrument rejects.
 Claims, abandoned grants, and hypothetical broker rejection do not release reservations. A reported position alongside a retained BUY reservation is inconsistent and rejects even an attempted exit; an initial known position can receive a full-exit grant, but its SELL reservation never frees capacity. P2A therefore cannot support a continuous entry/fill/exit cycle. It deliberately has no fill, rejection, cancellation, timeout, or reconciliation transition, and a caller must not infer release from a changed state snapshot.
 
 P2A assumes exactly one gate owner for a declared scope. Its history, reservations, and token registry are in memory. Ordinary dataclass construction and reconstructed historical evidence cannot claim; Python introspection can copy a private issuer/token into an equivalent artifact, but that artifact shares the original grant's single consumption record. Another gate cannot consume it, even when deterministic grant IDs match. There is no hostile-process security: code that can mutate private gate internals is outside this guarantee. P2A provides application authority discipline, not cryptographic isolation, distributed locking, restart-safe idempotency, or evidence that a newly started process matches the brokerage account. P4A must remain shadow-only; P5A will require broker-authoritative reconciliation and durable duplicate handling, as well as submission-time revalidation, before paper submission is safe.
+
+## P5A.0 operational design requirements
+
+P5A paper execution is explicitly authorized as an engineering direction. P5A.0
+adds documentation and CI only; the P2A behavior above is unchanged. The
+[execution contract](P5A_EXECUTION_CONTRACT.md) and
+[ADR 0005](decisions/0005-paper-execution-recovery.md) specify the future authority.
+No live-capital trading is permitted.
+
+P5A requires a versioned durable risk authority preserving P2A pure rules and
+terminal decisions, with broker account/clock/asset eligibility, buying power,
+current controls, freshness, canary limits and durable daily usage. Admission,
+reservation, capability consumption and dispatch markers must be journaled before
+external effects. Revalidation must account for its own exact reservation without
+discarding any other exposure; historical authorization cannot substitute for
+current checks. A bounded final-send check narrows but cannot eliminate the race
+with broker state, market close or an in-flight control change.
+
+Broker evidence alone supports reservation release or transformation, with linked
+orders/fills and complete positions agreeing in a committed reconciliation revision.
+Partial fills retain actual exposure and remaining obligation. Uncertain submissions
+halt all new submits, retain capacity and require reconciliation; deterministic
+client IDs do not authorize blind retries. Restarts rebuild durable history and
+reconcile before fresh authorization, never by resetting the P2A gate.
+
+The initial envelope is one liquid allowlisted equity, one whole share, market/DAY,
+regular hours, one concurrent position, and a required daily attempt ceiling with
+entry budget reserved for a later exit. Reconciled holdings support full threshold
+exit proposals under the unchanged strategy. Kill switch, stale state or exhausted
+budget can block exits; none means liquidation. Operator recovery and unresolved
+exposure must remain explicit. [Follow-up tickets](P5A_EXECUTION_PLAN.md) define the
+tests and separate canary approval needed to make these requirements executable.
