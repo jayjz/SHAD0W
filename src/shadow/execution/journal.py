@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """P5A.2A local journal identity: explicit create/reopen, no event authority."""
 
 from __future__ import annotations
@@ -9,16 +10,69 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
-from shadow.execution.journal_codec import CODEC_VERSION
+from shadow.execution.broker import (
+    BrokerAccount,
+    BrokerAsset,
+    BrokerClock,
+    BrokerSnapshot,
+    SubmissionResult,
+    SubmitRequest,
+)
+from shadow.execution.journal_codec import CODEC_VERSION, canonical_bytes, decode_canonical
 from shadow.execution.ownership import AccountOwner, OwnershipError
-from shadow.risk.models import OrderTarget
+from shadow.risk.models import OrderTarget, RiskDecision
 
-JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v1"
+JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v2"
+T = TypeVar("T")
 
 
 class JournalError(RuntimeError):
     """The local durable journal cannot establish its immutable identity."""
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedAttempt:
+    """One permanently-spent network attempt, reconstructed without ambient state."""
+
+    intent_identity: str
+    source_opportunity_id: str
+    client_order_id: str
+    client_order_full_digest: str
+    broker_trading_date: str
+    attempt_sequence: int
+    committed_at: datetime
+    dispatch_deadline: datetime
+    request: SubmitRequest
+    risk_decision: RiskDecision
+    account: BrokerAccount
+    clock: BrokerClock
+    asset: BrokerAsset
+    snapshot: BrokerSnapshot
+    submission: SubmissionResult | None
+    reconciliation: BrokerSnapshot | None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "intent_identity",
+            "source_opportunity_id",
+            "client_order_id",
+            "broker_trading_date",
+        ):
+            _text(getattr(self, name), name)
+        if len(self.client_order_full_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.client_order_full_digest
+        ):
+            raise JournalError("client order full digest must be a SHA-256 digest")
+        if self.attempt_sequence <= 0:
+            raise JournalError("attempt_sequence must be positive")
+        object.__setattr__(self, "committed_at", _utc(self.committed_at, "committed_at"))
+        object.__setattr__(
+            self, "dispatch_deadline", _utc(self.dispatch_deadline, "dispatch_deadline")
+        )
+        if self.dispatch_deadline < self.committed_at:
+            raise JournalError("dispatch deadline precedes commit")
 
 
 def _text(value: str, field: str) -> None:
@@ -238,6 +292,85 @@ class ExecutionJournal:
                     identity.created_at.isoformat(),
                 ),
             )
+            connection.execute(
+                """
+                CREATE TABLE committed_attempts (
+                    intent_identity TEXT PRIMARY KEY,
+                    source_opportunity_id TEXT NOT NULL UNIQUE,
+                    client_order_id TEXT NOT NULL UNIQUE,
+                    client_order_full_digest TEXT NOT NULL UNIQUE,
+                    broker_trading_date TEXT NOT NULL,
+                    attempt_sequence INTEGER NOT NULL UNIQUE CHECK (attempt_sequence > 0),
+                    committed_at TEXT NOT NULL,
+                    dispatch_deadline TEXT NOT NULL,
+                    request BLOB NOT NULL,
+                    risk_decision BLOB NOT NULL,
+                    account BLOB NOT NULL,
+                    clock BLOB NOT NULL,
+                    asset BLOB NOT NULL,
+                    snapshot BLOB NOT NULL,
+                    submission BLOB,
+                    reconciliation BLOB
+                ) STRICT
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE journal_halts (
+                    sequence INTEGER PRIMARY KEY,
+                    occurred_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    intent_identity TEXT
+                ) STRICT
+                """
+            )
+            connection.execute(
+                """
+                CREATE TRIGGER committed_attempts_transition_only
+                BEFORE UPDATE ON committed_attempts
+                WHEN NOT (
+                    (
+                        NEW.intent_identity IS OLD.intent_identity
+                        AND NEW.source_opportunity_id IS OLD.source_opportunity_id
+                        AND NEW.client_order_id IS OLD.client_order_id
+                        AND NEW.client_order_full_digest IS OLD.client_order_full_digest
+                        AND NEW.broker_trading_date IS OLD.broker_trading_date
+                        AND NEW.attempt_sequence IS OLD.attempt_sequence
+                        AND NEW.committed_at IS OLD.committed_at
+                        AND NEW.dispatch_deadline IS OLD.dispatch_deadline
+                        AND NEW.request IS OLD.request
+                        AND NEW.risk_decision IS OLD.risk_decision
+                        AND NEW.account IS OLD.account
+                        AND NEW.clock IS OLD.clock
+                        AND NEW.asset IS OLD.asset
+                        AND NEW.snapshot IS OLD.snapshot
+                        AND OLD.submission IS NULL
+                        AND NEW.submission IS NOT NULL
+                        AND NEW.reconciliation IS OLD.reconciliation
+                    )
+                    OR (
+                        NEW.intent_identity IS OLD.intent_identity
+                        AND NEW.source_opportunity_id IS OLD.source_opportunity_id
+                        AND NEW.client_order_id IS OLD.client_order_id
+                        AND NEW.client_order_full_digest IS OLD.client_order_full_digest
+                        AND NEW.broker_trading_date IS OLD.broker_trading_date
+                        AND NEW.attempt_sequence IS OLD.attempt_sequence
+                        AND NEW.committed_at IS OLD.committed_at
+                        AND NEW.dispatch_deadline IS OLD.dispatch_deadline
+                        AND NEW.request IS OLD.request
+                        AND NEW.risk_decision IS OLD.risk_decision
+                        AND NEW.account IS OLD.account
+                        AND NEW.clock IS OLD.clock
+                        AND NEW.asset IS OLD.asset
+                        AND NEW.snapshot IS OLD.snapshot
+                        AND NEW.submission IS OLD.submission
+                        AND OLD.reconciliation IS NULL
+                        AND NEW.reconciliation IS NOT NULL
+                    )
+                )
+                BEGIN SELECT RAISE(ABORT, 'committed attempts are transition-only'); END
+                """
+            )
             connection.execute("COMMIT")
         except sqlite3.Error:
             connection.execute("ROLLBACK")
@@ -251,7 +384,10 @@ class ExecutionJournal:
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise JournalError("journal foreign key check failed")
         expected_objects = {
+            ("table", "committed_attempts"),
             ("table", "journal_metadata"),
+            ("table", "journal_halts"),
+            ("trigger", "committed_attempts_transition_only"),
             ("trigger", "journal_metadata_immutable_delete"),
             ("trigger", "journal_metadata_immutable_update"),
         }
@@ -293,6 +429,239 @@ class ExecutionJournal:
             self._owner.assert_held(account_id=self.identity.account_id)
         except OwnershipError as exc:
             raise JournalError("journal ownership is no longer valid") from exc
+
+    def _transaction(self) -> None:
+        self.assert_held()
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error as exc:
+            raise JournalError("unable to begin durable journal transaction") from exc
+
+    def _commit(self) -> None:
+        try:
+            self._connection.execute("COMMIT")
+        except sqlite3.Error as exc:
+            try:
+                self._connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise JournalError("durable journal commit failed") from exc
+
+    def _rollback(self) -> None:
+        try:
+            self._connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+
+    @staticmethod
+    def _encoded(value: object) -> bytes:
+        try:
+            return canonical_bytes(value)
+        except ValueError as exc:
+            raise JournalError("journal evidence cannot be canonically encoded") from exc
+
+    @staticmethod
+    def _decoded(value: object, expected: type[T]) -> T:
+        if not isinstance(value, bytes):
+            raise JournalError("journal evidence payload is malformed")
+        try:
+            decoded = decode_canonical(value)
+        except ValueError as exc:
+            raise JournalError("journal evidence cannot be decoded") from exc
+        if not isinstance(decoded, expected):
+            raise JournalError("journal evidence type mismatch")
+        return decoded
+
+    def commit_attempt(
+        self,
+        *,
+        intent_identity: str,
+        source_opportunity_id: str,
+        client_order_id: str,
+        client_order_full_digest: str,
+        broker_trading_date: str,
+        committed_at: datetime,
+        dispatch_deadline: datetime,
+        request: SubmitRequest,
+        risk_decision: RiskDecision,
+        account: BrokerAccount,
+        clock: BrokerClock,
+        asset: BrokerAsset,
+        snapshot: BrokerSnapshot,
+    ) -> CommittedAttempt:
+        """Durably spend an intent before any provider POST is allowed."""
+        candidate = CommittedAttempt(
+            intent_identity,
+            source_opportunity_id,
+            client_order_id,
+            client_order_full_digest,
+            broker_trading_date,
+            1,
+            committed_at,
+            dispatch_deadline,
+            request,
+            risk_decision,
+            account,
+            clock,
+            asset,
+            snapshot,
+            None,
+            None,
+        )
+        if request.client_id != client_order_id:
+            raise JournalError("request/client identity mismatch")
+        self._transaction()
+        try:
+            existing = self._connection.execute(
+                "SELECT intent_identity FROM committed_attempts WHERE intent_identity = ?",
+                (intent_identity,),
+            ).fetchone()
+            if existing is not None:
+                raise JournalError("logical intent already has a committed attempt")
+            sequence = self._connection.execute(
+                "SELECT COALESCE(MAX(attempt_sequence), 0) + 1 FROM committed_attempts"
+            ).fetchone()
+            assert sequence is not None
+            candidate = CommittedAttempt(
+                intent_identity,
+                source_opportunity_id,
+                client_order_id,
+                client_order_full_digest,
+                broker_trading_date,
+                sequence[0],
+                committed_at,
+                dispatch_deadline,
+                request,
+                risk_decision,
+                account,
+                clock,
+                asset,
+                snapshot,
+                None,
+                None,
+            )
+            self._connection.execute(
+                "INSERT INTO committed_attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                (
+                    candidate.intent_identity,
+                    candidate.source_opportunity_id,
+                    candidate.client_order_id,
+                    candidate.client_order_full_digest,
+                    candidate.broker_trading_date,
+                    candidate.attempt_sequence,
+                    candidate.committed_at.isoformat(),
+                    candidate.dispatch_deadline.isoformat(),
+                    self._encoded(candidate.request),
+                    self._encoded(candidate.risk_decision),
+                    self._encoded(candidate.account),
+                    self._encoded(candidate.clock),
+                    self._encoded(candidate.asset),
+                    self._encoded(candidate.snapshot),
+                ),
+            )
+            self._commit()
+        except (sqlite3.Error, JournalError):
+            self._rollback()
+            raise
+        return candidate
+
+    def attempt_for_intent(self, intent_identity: str) -> CommittedAttempt | None:
+        _text(intent_identity, "intent_identity")
+        self.assert_held()
+        row = self._connection.execute(
+            "SELECT * FROM committed_attempts WHERE intent_identity = ?", (intent_identity,)
+        ).fetchone()
+        return None if row is None else self._attempt_from_row(row)
+
+    def committed_attempts(self) -> tuple[CommittedAttempt, ...]:
+        self.assert_held()
+        rows = self._connection.execute(
+            "SELECT * FROM committed_attempts ORDER BY attempt_sequence"
+        ).fetchall()
+        return tuple(self._attempt_from_row(row) for row in rows)
+
+    def _attempt_from_row(self, row: tuple[object, ...]) -> CommittedAttempt:
+        try:
+            committed_at = datetime.fromisoformat(str(row[6]))
+            deadline = datetime.fromisoformat(str(row[7]))
+        except ValueError as exc:
+            raise JournalError("attempt timestamp is malformed") from exc
+        submission = None if row[14] is None else self._decoded(row[14], SubmissionResult)
+        reconciliation = None if row[15] is None else self._decoded(row[15], BrokerSnapshot)
+        if isinstance(row[5], bool) or not isinstance(row[5], int):
+            raise JournalError("attempt sequence is malformed")
+        return CommittedAttempt(
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            str(row[4]),
+            row[5],
+            committed_at,
+            deadline,
+            self._decoded(row[8], SubmitRequest),
+            self._decoded(row[9], RiskDecision),
+            self._decoded(row[10], BrokerAccount),
+            self._decoded(row[11], BrokerClock),
+            self._decoded(row[12], BrokerAsset),
+            self._decoded(row[13], BrokerSnapshot),
+            submission,
+            reconciliation,
+        )
+
+    def persist_submission(self, *, intent_identity: str, result: SubmissionResult) -> None:
+        self._transaction()
+        try:
+            attempt = self.attempt_for_intent(intent_identity)
+            if attempt is None:
+                raise JournalError("cannot persist result for missing attempt")
+            if attempt.submission is not None:
+                raise JournalError("submission result is immutable")
+            if attempt.request != result.request:
+                raise JournalError("submission result request mismatch")
+            self._connection.execute(
+                "UPDATE committed_attempts SET submission = ? WHERE intent_identity = ?",
+                (self._encoded(result), intent_identity),
+            )
+            self._commit()
+        except (sqlite3.Error, JournalError):
+            self._rollback()
+            raise
+
+    def persist_reconciliation(self, *, intent_identity: str, snapshot: BrokerSnapshot) -> None:
+        self._transaction()
+        try:
+            attempt = self.attempt_for_intent(intent_identity)
+            if attempt is None:
+                raise JournalError("cannot persist reconciliation for missing attempt")
+            if attempt.reconciliation is not None:
+                raise JournalError("reconciliation evidence is immutable")
+            self._connection.execute(
+                "UPDATE committed_attempts SET reconciliation = ? WHERE intent_identity = ?",
+                (self._encoded(snapshot), intent_identity),
+            )
+            self._commit()
+        except (sqlite3.Error, JournalError):
+            self._rollback()
+            raise
+
+    def record_halt(
+        self, *, occurred_at: datetime, reason: str, intent_identity: str | None = None
+    ) -> None:
+        _utc(occurred_at, "occurred_at")
+        _text(reason, "reason")
+        if intent_identity is not None:
+            _text(intent_identity, "intent_identity")
+        self._transaction()
+        try:
+            self._connection.execute(
+                "INSERT INTO journal_halts (occurred_at, reason, intent_identity) VALUES (?, ?, ?)",
+                (occurred_at.isoformat(), reason, intent_identity),
+            )
+            self._commit()
+        except sqlite3.Error as exc:
+            self._rollback()
+            raise JournalError("unable to persist halt") from exc
 
     def close(self) -> None:
         if not self._closed:
