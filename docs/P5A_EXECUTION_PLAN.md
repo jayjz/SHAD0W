@@ -60,9 +60,14 @@ P5A.2A provides only the prerequisite foundation: versioned canonical codecs,
 stable source bindings, deterministic paper client IDs, account-wide local
 ownership, and explicit create/reopen journal identity. It creates no event,
 reservation, capability, projection, reconciliation, or dispatch authority.
-P5A.2B will add durable event/projection behavior only after that foundation is
-reviewed. A locally intact journal cannot prove a whole-storage rollback; missing
-historical execution evidence remains unresolved until P5A.3.
+P5A.2B now adds only durable immutable source-binding and first-decision
+projections: exact reconnect delivery replays the first binding/decision, a
+material variant fails closed, and append-only events must reproduce projections
+on reopen. It creates no reservation, capability, reconciliation, or dispatch
+authority. Existing v2 journals are intentionally rejected rather than silently
+migrated: an explicit, reviewed migration policy is still required. A locally
+intact journal cannot prove a whole-storage rollback; missing historical execution
+evidence remains unresolved until P5A.3.
 
 ## P5A.3 — Broker reconciliation and reservation lifecycle
 

@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""P5A.2A local journal identity: explicit create/reopen, no event authority."""
+"""P5A.2 durable journal identity and immutable source/decision projections."""
 
 from __future__ import annotations
 
@@ -21,10 +21,13 @@ from shadow.execution.broker import (
     SubmitRequest,
 )
 from shadow.execution.journal_codec import CODEC_VERSION, canonical_bytes, decode_canonical
+from shadow.execution.opportunity import SourceOpportunityBinding, SourceOpportunityError
 from shadow.execution.ownership import AccountOwner, OwnershipError
-from shadow.risk.models import OrderTarget, RiskDecision
+from shadow.features import FeatureSnapshot
+from shadow.risk.models import OrderIntent, OrderTarget, RiskDecision
+from shadow.strategies import Signal
 
-JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v2"
+JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v3"
 T = TypeVar("T")
 
 
@@ -73,6 +76,32 @@ class CommittedAttempt:
         )
         if self.dispatch_deadline < self.committed_at:
             raise JournalError("dispatch deadline precedes commit")
+
+
+@dataclass(frozen=True, slots=True)
+class JournalAdmission:
+    """The first durable decision for one immutable source opportunity.
+
+    This is evidence and a projection only.  It deliberately creates no
+    capability, reservation, reconciliation state, or dispatch authority.
+    """
+
+    source_key: str
+    binding_digest: str
+    intent_identity: str
+    decision: RiskDecision
+
+    def __post_init__(self) -> None:
+        for name in ("source_key", "binding_digest", "intent_identity"):
+            _text(getattr(self, name), name)
+        if len(self.binding_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.binding_digest
+        ):
+            raise JournalError("binding_digest must be a SHA-256 digest")
+        if not isinstance(self.decision, RiskDecision):
+            raise JournalError("decision must be a RiskDecision")
+        if self.decision.intent.intent_identity != self.intent_identity:
+            raise JournalError("decision intent identity mismatch")
 
 
 def _text(value: str, field: str) -> None:
@@ -214,7 +243,9 @@ class ExecutionJournal:
         except OwnershipError as exc:
             connection.close()
             raise JournalError("journal path conflicts with account ownership") from exc
-        return cls(candidate, identity, connection, owner)
+        journal = cls(candidate, identity, connection, owner)
+        journal.verify_projections()
+        return journal
 
     @classmethod
     def reopen(
@@ -243,7 +274,13 @@ class ExecutionJournal:
         except OwnershipError as exc:
             connection.close()
             raise JournalError("journal path conflicts with account ownership") from exc
-        return cls(candidate, identity, connection, owner)
+        journal = cls(candidate, identity, connection, owner)
+        try:
+            journal.verify_projections()
+        except JournalError:
+            journal.close()
+            raise
+        return journal
 
     @staticmethod
     def _create_schema(connection: sqlite3.Connection, identity: JournalIdentity) -> None:
@@ -326,6 +363,54 @@ class ExecutionJournal:
             )
             connection.execute(
                 """
+                CREATE TABLE source_opportunity_bindings (
+                    source_key TEXT PRIMARY KEY,
+                    binding_digest TEXT NOT NULL,
+                    source_key_evidence BLOB NOT NULL,
+                    feature BLOB NOT NULL,
+                    signal BLOB NOT NULL,
+                    intent BLOB NOT NULL
+                ) STRICT
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE terminal_admissions (
+                    source_key TEXT PRIMARY KEY,
+                    binding_digest TEXT NOT NULL,
+                    intent_identity TEXT NOT NULL UNIQUE,
+                    decision BLOB NOT NULL,
+                    FOREIGN KEY (source_key) REFERENCES source_opportunity_bindings(source_key)
+                ) STRICT
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE journal_events (
+                    sequence INTEGER PRIMARY KEY,
+                    occurred_at TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('source_bound', 'admission_recorded')),
+                    source_key TEXT NOT NULL,
+                    payload BLOB NOT NULL,
+                    FOREIGN KEY (source_key) REFERENCES source_opportunity_bindings(source_key)
+                ) STRICT
+                """
+            )
+            for table in (
+                "source_opportunity_bindings",
+                "terminal_admissions",
+                "journal_events",
+            ):
+                connection.execute(
+                    f"CREATE TRIGGER {table}_immutable_update BEFORE UPDATE ON {table} "
+                    "BEGIN SELECT RAISE(ABORT, 'journal evidence is immutable'); END"
+                )
+                connection.execute(
+                    f"CREATE TRIGGER {table}_immutable_delete BEFORE DELETE ON {table} "
+                    "BEGIN SELECT RAISE(ABORT, 'journal evidence is immutable'); END"
+                )
+            connection.execute(
+                """
                 CREATE TRIGGER committed_attempts_transition_only
                 BEFORE UPDATE ON committed_attempts
                 WHEN NOT (
@@ -387,9 +472,18 @@ class ExecutionJournal:
             ("table", "committed_attempts"),
             ("table", "journal_metadata"),
             ("table", "journal_halts"),
+            ("table", "journal_events"),
+            ("table", "source_opportunity_bindings"),
+            ("table", "terminal_admissions"),
             ("trigger", "committed_attempts_transition_only"),
+            ("trigger", "journal_events_immutable_delete"),
+            ("trigger", "journal_events_immutable_update"),
             ("trigger", "journal_metadata_immutable_delete"),
             ("trigger", "journal_metadata_immutable_update"),
+            ("trigger", "source_opportunity_bindings_immutable_delete"),
+            ("trigger", "source_opportunity_bindings_immutable_update"),
+            ("trigger", "terminal_admissions_immutable_delete"),
+            ("trigger", "terminal_admissions_immutable_update"),
         }
         objects = set(
             connection.execute(
@@ -471,6 +565,224 @@ class ExecutionJournal:
         if not isinstance(decoded, expected):
             raise JournalError("journal evidence type mismatch")
         return decoded
+
+    @staticmethod
+    def _binding_key_evidence(binding: SourceOpportunityBinding) -> tuple[object, ...]:
+        key = binding.key
+        return (
+            "shadow.source-opportunity-key.v1",
+            key.account_id,
+            key.operational_scope,
+            key.feed_lineage,
+            key.instrument,
+            key.completed_bar_observation_time,
+            key.strategy_id,
+            key.strategy_version,
+            key.feature_name,
+            key.feature_input,
+            key.feature_implementation_version,
+            key.feature_window,
+        )
+
+    def bind_source_opportunity(
+        self, binding: SourceOpportunityBinding
+    ) -> SourceOpportunityBinding:
+        """Persist the first causal binding; exact reconnect redelivery is idempotent.
+
+        A changed feature, signal, intent, or source key is a durable conflict.  The
+        method is intentionally below admission: it has no broker or capability
+        interaction and cannot make an order possible.
+        """
+        if not isinstance(binding, SourceOpportunityBinding):
+            raise JournalError("binding must be a SourceOpportunityBinding")
+        source_key = binding.key.source_key
+        binding_digest = binding.evidence_digest
+        key_evidence = self._encoded(self._binding_key_evidence(binding))
+        feature = self._encoded(binding.feature)
+        signal = self._encoded(binding.signal)
+        intent = self._encoded(binding.intent)
+        self._transaction()
+        try:
+            existing = self._connection.execute(
+                "SELECT binding_digest, source_key_evidence, feature, signal, intent "
+                "FROM source_opportunity_bindings WHERE source_key = ?",
+                (source_key,),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) != (binding_digest, key_evidence, feature, signal, intent):
+                    raise JournalError("materially changed source opportunity binding")
+                self._commit()
+                return binding
+            self._connection.execute(
+                "INSERT INTO source_opportunity_bindings VALUES (?, ?, ?, ?, ?, ?)",
+                (source_key, binding_digest, key_evidence, feature, signal, intent),
+            )
+            self._connection.execute(
+                "INSERT INTO journal_events (occurred_at, kind, source_key, payload) "
+                "VALUES (?, 'source_bound', ?, ?)",
+                (
+                    binding.signal.decision_time.isoformat(),
+                    source_key,
+                    self._encoded(binding_digest),
+                ),
+            )
+            self._commit()
+        except (sqlite3.Error, JournalError):
+            self._rollback()
+            raise
+        return binding
+
+    def source_binding(self, source_key: str) -> SourceOpportunityBinding | None:
+        """Replay one binding strictly from journal bytes, with no ambient inputs."""
+        _text(source_key, "source_key")
+        self.assert_held()
+        row = self._connection.execute(
+            "SELECT binding_digest, source_key_evidence, feature, signal, intent "
+            "FROM source_opportunity_bindings WHERE source_key = ?",
+            (source_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            key_parts = decode_canonical(row[1])
+            if not isinstance(key_parts, tuple) or len(key_parts) != 12:
+                raise JournalError("source key evidence is malformed")
+            from shadow.execution.opportunity import SourceOpportunityKey
+
+            key = SourceOpportunityKey(*key_parts[1:])
+            binding = SourceOpportunityBinding(
+                key,
+                self._decoded(row[2], FeatureSnapshot),
+                self._decoded(row[3], Signal),
+                self._decoded(row[4], OrderIntent),
+            )
+        except (SourceOpportunityError, ValueError, TypeError, JournalError) as exc:
+            raise JournalError("source opportunity projection is malformed") from exc
+        if binding.key.source_key != source_key or binding.evidence_digest != row[0]:
+            raise JournalError("source opportunity projection conflicts with journal")
+        return binding
+
+    def record_terminal_admission(
+        self, *, binding: SourceOpportunityBinding, decision: RiskDecision
+    ) -> JournalAdmission:
+        """Record the first decision for a binding, including terminal rejections.
+
+        Admission evaluation remains outside this primitive.  Its only guarantee is
+        that a reconnect cannot replace a recorded decision with changed evidence
+        or turn an old rejection into a new opportunity.
+        """
+        if not isinstance(decision, RiskDecision):
+            raise JournalError("decision must be a RiskDecision")
+        persisted = self.bind_source_opportunity(binding)
+        if decision.intent != persisted.intent:
+            raise JournalError("decision intent does not match source binding")
+        admission = JournalAdmission(
+            persisted.key.source_key,
+            persisted.evidence_digest,
+            decision.intent.intent_identity,
+            decision,
+        )
+        encoded = self._encoded(decision)
+        self._transaction()
+        try:
+            existing = self._connection.execute(
+                "SELECT binding_digest, intent_identity, decision FROM terminal_admissions "
+                "WHERE source_key = ?",
+                (admission.source_key,),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) != (
+                    admission.binding_digest,
+                    admission.intent_identity,
+                    encoded,
+                ):
+                    raise JournalError("terminal admission conflicts with first decision")
+                self._commit()
+                return admission
+            self._connection.execute(
+                "INSERT INTO terminal_admissions VALUES (?, ?, ?, ?)",
+                (
+                    admission.source_key,
+                    admission.binding_digest,
+                    admission.intent_identity,
+                    encoded,
+                ),
+            )
+            self._connection.execute(
+                "INSERT INTO journal_events (occurred_at, kind, source_key, payload) "
+                "VALUES (?, 'admission_recorded', ?, ?)",
+                (decision.decision_time.isoformat(), admission.source_key, encoded),
+            )
+            self._commit()
+        except (sqlite3.Error, JournalError):
+            self._rollback()
+            raise
+        return admission
+
+    def terminal_admission(self, source_key: str) -> JournalAdmission | None:
+        _text(source_key, "source_key")
+        self.assert_held()
+        row = self._connection.execute(
+            "SELECT binding_digest, intent_identity, decision FROM terminal_admissions "
+            "WHERE source_key = ?",
+            (source_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        binding = self.source_binding(source_key)
+        if binding is None:
+            raise JournalError("admission has no source binding")
+        try:
+            admission = JournalAdmission(
+                source_key,
+                str(row[0]),
+                str(row[1]),
+                self._decoded(row[2], RiskDecision),
+            )
+        except (ValueError, JournalError) as exc:
+            raise JournalError("terminal admission projection is malformed") from exc
+        if (
+            admission.binding_digest != binding.evidence_digest
+            or admission.decision.intent != binding.intent
+        ):
+            raise JournalError("terminal admission projection conflicts with binding")
+        return admission
+
+    def verify_projections(self) -> None:
+        """Fail closed unless append-only events reproduce current projections."""
+        self.assert_held()
+        events = self._connection.execute(
+            "SELECT occurred_at, kind, source_key, payload FROM journal_events ORDER BY sequence"
+        ).fetchall()
+        bindings: set[str] = set()
+        admissions: set[str] = set()
+        for occurred_at, kind, source_key, payload in events:
+            try:
+                _utc(datetime.fromisoformat(str(occurred_at)), "event occurred_at")
+                if kind == "source_bound":
+                    binding = self.source_binding(str(source_key))
+                    if binding is None:
+                        raise JournalError("source binding event has no projection")
+                    expected = self._encoded(binding.evidence_digest)
+                    bindings.add(str(source_key))
+                elif kind == "admission_recorded":
+                    admission = self.terminal_admission(str(source_key))
+                    if admission is None:
+                        raise JournalError("admission event has no projection")
+                    expected = self._encoded(admission.decision)
+                    admissions.add(str(source_key))
+                else:
+                    raise JournalError("unknown journal event kind")
+                if payload != expected:
+                    raise JournalError("journal event differs from projection")
+            except (TypeError, ValueError, JournalError) as exc:
+                raise JournalError("journal projection replay failed") from exc
+        counts = self._connection.execute(
+            "SELECT (SELECT COUNT(*) FROM source_opportunity_bindings), "
+            "(SELECT COUNT(*) FROM terminal_admissions)"
+        ).fetchone()
+        if counts != (len(bindings), len(admissions)):
+            raise JournalError("journal projections have missing append-only events")
 
     def commit_attempt(
         self,

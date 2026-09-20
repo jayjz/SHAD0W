@@ -46,7 +46,13 @@ from shadow.features import (
     FeatureSnapshot,
     FeatureState,
 )
-from shadow.risk.models import OperationalQuantityConfig, OrderIntent
+from shadow.risk.models import (
+    OperationalQuantityConfig,
+    OrderIntent,
+    RiskDecision,
+    RiskDecisionStatus,
+    RiskRejectionReason,
+)
 from shadow.strategies import Signal, SignalReason, SignalType
 
 NOW = datetime(2026, 9, 18, 15, tzinfo=UTC)
@@ -537,3 +543,135 @@ def test_new_modules_cannot_issue_network_or_broker_calls() -> None:
             & forbidden_calls
         )
     assert len(canonical_digest(binding().intent)) == 64
+
+
+def _rejected_decision(intent: OrderIntent) -> RiskDecision:
+    return RiskDecision(
+        intent=intent,
+        status=RiskDecisionStatus.REJECTED,
+        reasons=(RiskRejectionReason.TRADING_DISABLED,),
+        policy_id="policy-v1",
+        policy_fingerprint="policy-fingerprint",
+        risk_state_id="state-v1",
+        risk_state_revision=1,
+        risk_state_fingerprint="state-fingerprint",
+        feature_reference="feature",
+        quote_reference="quote",
+        decision_time=NOW,
+    )
+
+
+def test_durable_source_binding_and_terminal_rejection_replay_across_restart(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "journal.sqlite"
+    owner_path = tmp_path / "owner"
+    owner_path.mkdir()
+    source = binding()
+    with AccountOwner.acquire(ownership_directory=owner_path, account_id="paper-account") as owner:
+        with ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        ) as created:
+            assert created.bind_source_opportunity(source) == source
+            admission = created.record_terminal_admission(
+                binding=source, decision=_rejected_decision(source.intent)
+            )
+            assert admission.decision.status is RiskDecisionStatus.REJECTED
+            created.verify_projections()
+        with ExecutionJournal.reopen(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+        ) as reopened:
+            assert reopened.source_binding(source.key.source_key) == source
+            replayed = reopened.terminal_admission(source.key.source_key)
+            assert replayed is not None
+            assert replayed.decision.status is RiskDecisionStatus.REJECTED
+            # Exact redelivery cannot manufacture another decision/capability.
+            assert (
+                reopened.record_terminal_admission(
+                    binding=binding(), decision=_rejected_decision(source.intent)
+                )
+                == replayed
+            )
+            reopened.verify_projections()
+
+
+def test_changed_binding_or_decision_conflicts_and_never_replaces_first_record(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "journal.sqlite"
+    owner_path = tmp_path / "owner"
+    owner_path.mkdir()
+    source = binding()
+    with AccountOwner.acquire(ownership_directory=owner_path, account_id="paper-account") as owner:
+        with ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        ) as journal:
+            journal.record_terminal_admission(
+                binding=source, decision=_rejected_decision(source.intent)
+            )
+            with pytest.raises(JournalError, match="materially changed"):
+                journal.bind_source_opportunity(binding(feature_value=Decimal("-3")))
+            changed = _rejected_decision(source.intent)
+            object.__setattr__(changed, "policy_id", "other-policy")
+            with pytest.raises(JournalError, match="conflicts with first decision"):
+                journal.record_terminal_admission(binding=source, decision=changed)
+            stored = journal.terminal_admission(source.key.source_key)
+            assert stored is not None
+            assert stored.decision.policy_id == "policy-v1"
+            journal.verify_projections()
+
+
+def test_projection_event_tampering_or_failed_commit_halts_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "journal.sqlite"
+    owner_path = tmp_path / "owner"
+    owner_path.mkdir()
+    source = binding()
+    with AccountOwner.acquire(ownership_directory=owner_path, account_id="paper-account") as owner:
+        with ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        ) as journal:
+            original_commit = ExecutionJournal._commit
+
+            def fail_commit(_journal: ExecutionJournal) -> None:
+                raise JournalError("injected durable commit failure")
+
+            monkeypatch.setattr(ExecutionJournal, "_commit", fail_commit)
+            with pytest.raises(JournalError, match="injected durable commit failure"):
+                journal.bind_source_opportunity(source)
+            monkeypatch.setattr(ExecutionJournal, "_commit", original_commit)
+            assert journal.source_binding(source.key.source_key) is None
+            journal.bind_source_opportunity(source)
+        connection = sqlite3.connect(path)
+        connection.execute("DROP TRIGGER journal_events_immutable_update")
+        connection.execute("UPDATE journal_events SET payload = ?", (b"tampered",))
+        connection.execute(
+            "CREATE TRIGGER journal_events_immutable_update "
+            "BEFORE UPDATE ON journal_events "
+            "BEGIN SELECT RAISE(ABORT, 'journal evidence is immutable'); END"
+        )
+        connection.commit()
+        connection.close()
+        with pytest.raises(JournalError, match="projection replay failed"):
+            ExecutionJournal.reopen(
+                path=path,
+                owner=owner,
+                account_id="paper-account",
+                operational_scope="paper-scope",
+            )
