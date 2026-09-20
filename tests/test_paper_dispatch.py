@@ -27,7 +27,7 @@ from shadow.execution.broker import (
     SubmitRequest,
     TradeUpdate,
 )
-from shadow.execution.dispatch import MAX_RISK_DECISION_AGE, CanaryDispatcher
+from shadow.execution.dispatch import MAX_RISK_DECISION_AGE, CanaryDispatcher, DispatchOutcome
 from shadow.execution.journal import ExecutionJournal
 from shadow.execution.ownership import AccountOwner
 from shadow.risk.models import (
@@ -51,6 +51,7 @@ class OneShotBroker:
         request: SubmitRequest,
         *,
         submission_status: SubmissionStatus = SubmissionStatus.ACCEPTED,
+        initial_orders: tuple[BrokerOrder, ...] = (),
     ) -> None:
         self.evidence = Evidence("broker", "paper-account", "paper-scope", NOW, NOW)
         self.order = BrokerOrder(
@@ -70,6 +71,7 @@ class OneShotBroker:
         )
         self.request = request
         self.submission_status = submission_status
+        self.initial_orders = initial_orders
         self.post_count = 0
         self.snapshot_count = 0
 
@@ -93,7 +95,9 @@ class OneShotBroker:
 
     def read_snapshot(self) -> BrokerSnapshot:
         self.snapshot_count += 1
-        orders = () if self.snapshot_count == 1 else (self.order,)
+        orders = (
+            self.initial_orders if self.snapshot_count == 1 else (*self.initial_orders, self.order)
+        )
         return BrokerSnapshot(
             self.evidence, (), orders, True, True, NOW - timedelta(minutes=1), NOW
         )
@@ -128,6 +132,109 @@ def decision(intent: OrderIntent, *, decision_time: datetime = NOW) -> RiskDecis
         quote_reference="quote",
         decision_time=decision_time,
     )
+
+
+def _dispatch_with_historical_status(
+    tmp_path: Path, status: OrderStatus
+) -> tuple[DispatchOutcome, OneShotBroker]:
+    source = binding()
+    identity = derive_paper_client_order_identity(
+        stable_account_binding="paper-account",
+        operational_scope="paper-scope",
+        intent_identity=source.intent.intent_identity,
+    )
+    request = SubmitRequest(
+        "paper-account",
+        "paper-scope",
+        identity.client_order_id,
+        SPY,
+        OrderSide.BUY,
+        Decimal(1),
+        OrderTarget.PAPER,
+        OrderType.MARKET,
+        TimeInForce.DAY,
+        False,
+    )
+    filled_quantity = (
+        Decimal(1)
+        if status is OrderStatus.FILLED
+        else (Decimal(".5") if status is OrderStatus.PARTIALLY_FILLED else Decimal(0))
+    )
+    evidence = Evidence("history", "paper-account", "paper-scope", NOW, NOW)
+    history = BrokerOrder(
+        evidence,
+        f"history-{status.value}",
+        f"history-client-{status.value}",
+        SPY,
+        OrderSide.BUY,
+        Decimal(1),
+        filled_quantity,
+        status,
+        OrderType.MARKET,
+        TimeInForce.DAY,
+        False,
+        None,
+        None,
+    )
+    paper_broker = OneShotBroker(request, initial_orders=(history,))
+    owner_path = tmp_path / "owner"
+    owner_path.mkdir()
+    with AccountOwner.acquire(ownership_directory=owner_path, account_id="paper-account") as owner:
+        with ExecutionJournal.create(
+            path=tmp_path / "journal.sqlite",
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        ) as journal:
+            outcome = CanaryDispatcher(
+                broker=paper_broker,
+                journal=journal,
+                now=lambda: NOW,
+                daily_submission_limit=2,
+            ).execute(
+                source_opportunity_id=f"history-{status.value}",
+                risk_decision=decision(source.intent),
+                request=request,
+                dispatch_deadline=NOW + timedelta(seconds=5),
+            )
+    return outcome, paper_broker
+
+
+@pytest.mark.parametrize("status", [OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED])
+def test_terminal_broker_history_does_not_block_new_canary(
+    tmp_path: Path, status: OrderStatus
+) -> None:
+    outcome, paper_broker = _dispatch_with_historical_status(tmp_path, status)
+    assert outcome.halted_reason is None
+    assert paper_broker.post_count == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        OrderStatus.NEW,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.PENDING_NEW,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PENDING_REPLACE,
+        OrderStatus.HELD,
+        OrderStatus.ACCEPTED_FOR_BIDDING,
+        OrderStatus.DONE_FOR_DAY,
+        OrderStatus.REPLACED,
+        OrderStatus.SUSPENDED,
+        OrderStatus.STOPPED,
+        OrderStatus.CALCULATED,
+        OrderStatus.UNKNOWN,
+    ],
+)
+def test_outstanding_or_ambiguous_broker_order_halts_canary(
+    tmp_path: Path, status: OrderStatus
+) -> None:
+    outcome, paper_broker = _dispatch_with_historical_status(tmp_path, status)
+    assert outcome.halted_reason == "outstanding broker order"
+    assert paper_broker.post_count == 0
 
 
 def test_one_logical_intent_has_at_most_one_provider_post_across_recovery(tmp_path: Path) -> None:

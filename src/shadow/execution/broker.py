@@ -76,6 +76,25 @@ class OrderStatus(StrEnum):
     HELD = "held"
     UNKNOWN = "unknown"
 
+    @property
+    def is_terminal(self) -> bool:
+        """Whether Alpaca documents this order as receiving no further updates.
+
+        ``filled``, ``canceled``, ``expired``, and ``rejected`` are the only
+        states with that documented guarantee.  In particular, ``done_for_day``
+        may update on the next trading day; ``calculated`` has pending settlement
+        calculations; and ``replaced`` does not establish the replacement's
+        state.  Every other state is therefore outstanding for this bounded
+        dispatcher, including ``unknown``.
+        """
+
+        return self in {
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.EXPIRED,
+            OrderStatus.REJECTED,
+        }
+
 
 class UpdateKind(StrEnum):
     STATUS = "status"
@@ -283,6 +302,12 @@ class BrokerOrder:
         ):
             _require(self.filled_quantity == 0, "unfilled status has fills")
 
+    @property
+    def is_terminal(self) -> bool:
+        """Lifecycle classification derived from the normalized status."""
+
+        return self.status.is_terminal
+
 
 @dataclass(frozen=True, slots=True)
 class BrokerFill:
@@ -344,9 +369,11 @@ class BrokerSnapshot:
     """Account-wide positions and orders, not an atomic reconciliation cut.
 
     orders_complete asserts all open orders AND history within the inclusive
-    history_start/history_end interval, with pagination exhausted. False retains
-    supplied rows but cannot establish absence. Cross-observation reconciliation,
-    replacement chains, and order/position agreement belong to P5A.3.
+    history_start/history_end interval, with pagination exhausted. ``orders``
+    deliberately retains both terminal history and outstanding orders; use the
+    derived views below when the distinction matters. False retains supplied rows
+    but cannot establish absence. Cross-observation reconciliation, replacement
+    chains, and order/position agreement belong to P5A.3.
     """
 
     evidence: Evidence
@@ -395,6 +422,18 @@ class BrokerSnapshot:
     @property
     def complete(self) -> bool:
         return self.positions_complete and self.orders_complete
+
+    @property
+    def terminal_orders(self) -> tuple[BrokerOrder, ...]:
+        """Historical rows whose documented lifecycle is complete."""
+
+        return tuple(order for order in self.orders if order.is_terminal)
+
+    @property
+    def outstanding_orders(self) -> tuple[BrokerOrder, ...]:
+        """Rows that cannot safely establish the absence of broker authority."""
+
+        return tuple(order for order in self.orders if not order.is_terminal)
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 import pytest
@@ -18,7 +18,13 @@ from shadow.adapters.alpaca.paper_broker import (
 )
 from shadow.application.paper_canary import _read_only
 from shadow.domain import Instrument
-from shadow.execution.broker import BrokerError, OrderStatus, SubmissionStatus, SubmitRequest
+from shadow.execution.broker import (
+    BrokerContractError,
+    BrokerError,
+    OrderStatus,
+    SubmissionStatus,
+    SubmitRequest,
+)
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 
 
@@ -179,6 +185,39 @@ def test_unsupported_request_is_rejected_before_transport(field: str) -> None:
     assert transport.calls == []
 
 
+def test_gtc_observation_does_not_broaden_market_day_submission() -> None:
+    with pytest.raises(BrokerContractError, match="market/DAY"):
+        replace(request(), time_in_force=TimeInForce.GTC)
+
+    transport = RecordingTransport([])
+    paper_broker = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=transport,
+    )
+    invalid_request = request()
+    # Exercise the adapter boundary even if an invalid request bypasses its frozen
+    # domain constructor.  It must remain a transport-free rejection.
+    object.__setattr__(invalid_request, "time_in_force", TimeInForce.GTC)
+    with pytest.raises(AlpacaPaperError, match="supported SPY PAPER BUY canary"):
+        paper_broker.submit(invalid_request)
+    assert transport.calls == []
+
+
+def test_crypto_history_does_not_grant_submission_authority() -> None:
+    transport = RecordingTransport([])
+    paper_broker = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=transport,
+    )
+    with pytest.raises(AlpacaPaperError, match="supported SPY PAPER BUY canary"):
+        paper_broker.submit(replace(request(), instrument=Instrument("BTC/USD")))
+    assert transport.calls == []
+
+
 def test_read_only_evidence_contains_sanitized_broker_state() -> None:
     transport = RecordingTransport(
         [
@@ -284,6 +323,62 @@ def test_documented_alpaca_order_statuses_translate_deterministically(status: st
     ).read_snapshot()
     assert not isinstance(result, BrokerError)
     assert result.orders[0].status is OrderStatus(status)
+
+
+def test_historical_market_gtc_order_parses_as_observation() -> None:
+    payload = order()
+    payload.update({"status": "canceled", "time_in_force": "gtc"})
+    result = broker(
+        [HttpResponse(200, {}, b"[]"), HttpResponse(200, {}, json.dumps([payload]).encode())]
+    ).read_snapshot()
+    assert not isinstance(result, BrokerError)
+    assert result.orders[0].time_in_force is TimeInForce.GTC
+    assert result.orders[0].is_terminal
+
+
+def test_mixed_equity_and_crypto_terminal_history_is_valid_without_inventory() -> None:
+    spy_day = order()
+    spy_day.update(
+        {
+            "id": "spy-day",
+            "client_order_id": "client-spy-day",
+            "status": "filled",
+            "filled_qty": "1",
+        }
+    )
+    spy_gtc = order()
+    spy_gtc.update(
+        {
+            "id": "spy-gtc",
+            "client_order_id": "client-spy-gtc",
+            "status": "canceled",
+            "time_in_force": "gtc",
+        }
+    )
+    btc_gtc = order()
+    btc_gtc.update(
+        {
+            "id": "btc-gtc",
+            "client_order_id": "client-btc-gtc",
+            "symbol": "BTC/USD",
+            "status": "expired",
+            "time_in_force": "gtc",
+        }
+    )
+    result = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([spy_day, spy_gtc, btc_gtc]).encode()),
+        ]
+    ).read_snapshot()
+    assert not isinstance(result, BrokerError)
+    assert result.positions == ()
+    assert tuple(order.instrument.identifier for order in result.terminal_orders) == (
+        "BTC/USD",
+        "SPY",
+        "SPY",
+    )
+    assert result.outstanding_orders == ()
 
 
 def test_held_historical_order_does_not_poison_valid_snapshot() -> None:

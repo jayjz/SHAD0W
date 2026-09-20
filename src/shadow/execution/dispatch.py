@@ -146,8 +146,8 @@ class CanaryDispatcher:
             raise DispatchHalted("broker inventory is incomplete")
         if snapshot.positions:
             raise DispatchHalted("unexpected broker position")
-        if snapshot.orders:
-            raise DispatchHalted("preexisting broker order")
+        if snapshot.outstanding_orders:
+            raise DispatchHalted("outstanding broker order")
         if request.quantity != Decimal(1):
             raise DispatchHalted("canary quantity changed")
         committed_today = sum(

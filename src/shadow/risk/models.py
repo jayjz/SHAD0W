@@ -34,7 +34,10 @@ class OrderType(StrEnum):
 
 
 class TimeInForce(StrEnum):
+    """Observed broker values; submission contracts select their own subset."""
+
     DAY = "day"
+    GTC = "gtc"
 
 
 class RiskDecisionStatus(StrEnum):

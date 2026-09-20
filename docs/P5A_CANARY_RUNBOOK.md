@@ -32,7 +32,10 @@ shadow-paper-canary --read-only --account-id "$SHADOW_PAPER_ACCOUNT_ID" \
 
 Inspect the artifact and stop unless account, clock, SPY asset, positions, and
 orders are all reported as typed broker evidence. Do not arm while the market is
-closed, an order/position exists, or the account binding differs.
+closed, a position exists, any broker order is outstanding, or the account binding
+differs. Historical `filled`, `canceled`, `expired`, and `rejected` rows remain
+reconciliation evidence and do not alone block the one-shot entry; every other
+order lifecycle state is conservatively treated as outstanding.
 
 `SHADOW_PAPER_ACCOUNT_ID` is the stable SHAD0W binding and must contain Alpaca's
 human-facing `account_number` (for example `PA34U6RNDIPQ`), not the distinct UUID

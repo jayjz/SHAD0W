@@ -217,6 +217,32 @@ def test_all_order_states(status: OrderStatus) -> None:
     assert order(status=status, filled_quantity=quantity).status is status
 
 
+def test_terminal_and_outstanding_order_views_are_explicit_and_exhaustive() -> None:
+    terminal = {
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.EXPIRED,
+        OrderStatus.REJECTED,
+    }
+    assert {status for status in OrderStatus if status.is_terminal} == terminal
+    orders = tuple(
+        order(
+            order_id=f"order-{status.value}",
+            client_id=f"client-{status.value}",
+            status=status,
+            filled_quantity=(
+                D(1)
+                if status is OrderStatus.FILLED
+                else (D(".3") if status is OrderStatus.PARTIALLY_FILLED else D(0))
+            ),
+        )
+        for status in OrderStatus
+    )
+    result = snapshot(orders=orders)
+    assert {item.status for item in result.terminal_orders} == terminal
+    assert {item.status for item in result.outstanding_orders} == set(OrderStatus) - terminal
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -340,6 +366,7 @@ def test_acceptance_is_matching_order_not_position_or_authority() -> None:
         {"quantity": True},
         {"order_type": "limit"},
         {"time_in_force": "gtc"},
+        {"time_in_force": TimeInForce.GTC},
         {"regular_hours_only": False},
         {"regular_hours_only": 1},
         {"enabled": 1},
@@ -491,6 +518,7 @@ def test_core_boundary_has_no_provider_or_ambient_io_imports() -> None:
         {"target": "live"},
         {"order_type": "limit"},
         {"time_in_force": "gtc"},
+        {"time_in_force": TimeInForce.GTC},
         {"extended_hours": True},
         {"extended_hours": 0},
         {"side": "buy"},
