@@ -34,6 +34,12 @@ Inspect the artifact and stop unless account, clock, SPY asset, positions, and
 orders are all reported as typed broker evidence. Do not arm while the market is
 closed, an order/position exists, or the account binding differs.
 
+`SHADOW_PAPER_ACCOUNT_ID` is the stable SHAD0W binding and must contain Alpaca's
+human-facing `account_number` (for example `PA34U6RNDIPQ`), not the distinct UUID
+in the account response's `id` field. The read-only check requires both fields,
+matches `account_number` exactly, and records the provider UUID as non-secret
+evidence.
+
 ## HUMAN-RUN first order
 
 This is the only command that can call `POST /v2/orders`. It needs an already

@@ -74,6 +74,12 @@ These origins and the distinction between paper and live environments follow
 and [trade-update streaming documentation](https://docs.alpaca.markets/us/docs/websocket-streaming).
 Provider details must be checked again when implementing the adapter.
 
+For Alpaca PAPER, the persistent SHAD0W account binding is explicitly the
+human-facing `account_number`; it is not interchangeable with the provider's
+UUID-shaped `id`. Every account read must require both values, verify
+`account_number` exactly against the configured binding, and may preserve `id` as
+provider identity evidence. Missing, malformed, or mismatched fields halt.
+
 ## Durable identity and journal
 
 Use a local SQLite journal through the standard library, with an exclusive process

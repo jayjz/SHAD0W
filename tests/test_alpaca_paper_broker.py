@@ -18,7 +18,7 @@ from shadow.adapters.alpaca.paper_broker import (
 )
 from shadow.application.paper_canary import _read_only
 from shadow.domain import Instrument
-from shadow.execution.broker import SubmissionStatus, SubmitRequest
+from shadow.execution.broker import BrokerError, OrderStatus, SubmissionStatus, SubmitRequest
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 
 
@@ -76,6 +76,33 @@ def order() -> dict[str, object]:
         "extended_hours": False,
         "created_at": "2026-09-18T15:00:00Z",
     }
+
+
+ACCOUNT_UUID = "a67ee0f2-11d4-4bb5-a02f-ef1241497e48"
+ACCOUNT_NUMBER = "PA34U6RNDIPQ"
+
+
+def account(
+    *, account_number: object = ACCOUNT_NUMBER, account_id: object = ACCOUNT_UUID
+) -> dict[str, object]:
+    return {
+        "id": account_id,
+        "account_number": account_number,
+        "status": "ACTIVE",
+        "trading_blocked": False,
+        "account_blocked": False,
+        "buying_power": "1000",
+        "currency": "USD",
+    }
+
+
+def broker(replies: list[HttpResponse]) -> AlpacaPaperBroker:
+    return AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id=ACCOUNT_NUMBER,
+        operational_scope="scope",
+        transport=RecordingTransport(replies),
+    )
 
 
 def test_origin_is_hard_bound_and_post_payload_is_one_whole_paper_share() -> None:
@@ -157,14 +184,7 @@ def test_read_only_evidence_contains_sanitized_broker_state() -> None:
         [
             response(
                 200,
-                {
-                    "id": "paper-account",
-                    "status": "ACTIVE",
-                    "trading_blocked": False,
-                    "account_blocked": False,
-                    "buying_power": "1000",
-                    "currency": "USD",
-                },
+                account(),
             ),
             response(
                 200,
@@ -184,18 +204,161 @@ def test_read_only_evidence_contains_sanitized_broker_state() -> None:
     )
     broker = AlpacaPaperBroker(
         credentials=PaperCredentials("key", "secret"),
-        account_id="paper-account",
+        account_id=ACCOUNT_NUMBER,
         operational_scope="scope",
         transport=transport,
     )
     evidence = _read_only(broker, Instrument("SPY"))
     assert evidence["target"] == "paper"
     assert evidence["account"]["eligibility"] == "eligible"  # type: ignore[index]
+    assert evidence["account"]["provider_account_id"] == ACCOUNT_UUID  # type: ignore[index]
     assert evidence["clock"]["session_close"] == "2026-09-18T20:00:00+00:00"  # type: ignore[index]
     assert evidence["asset"]["tradable"] == "eligible"  # type: ignore[index]
     assert evidence["snapshot"]["positions"] == []  # type: ignore[index]
     assert evidence["snapshot"]["orders"] == []  # type: ignore[index]
     serialized = json.dumps(evidence)
     assert "secret" not in serialized
+    assert "key" not in serialized
     assert "positions-request" in serialized
     assert "orders-request" in serialized
+
+
+def test_account_number_binding_is_distinct_from_provider_uuid() -> None:
+    result = broker([response(200, account())]).read_account()
+    assert not isinstance(result, BrokerError)
+    assert result.evidence.account_id == ACCOUNT_NUMBER
+    assert result.provider_account_id == ACCOUNT_UUID
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (account(account_number="PA34U6RNDIPX"), "PAPER account binding mismatch"),
+        (account(account_number=None), "PAPER account identity fields are malformed"),
+        (account(account_number=""), "PAPER account number is malformed"),
+        (account(account_number=" PA34U6RNDIPQ"), "PAPER account number is malformed"),
+        (account(account_id="not-a-uuid"), "PAPER account UUID is malformed"),
+        (account(account_id=None), "PAPER account identity fields are malformed"),
+    ],
+)
+def test_invalid_or_mismatched_account_identity_fails_closed(
+    payload: dict[str, object], reason: str
+) -> None:
+    result = broker([response(200, payload)]).read_account()
+    assert isinstance(result, BrokerError)
+    assert result.category.value == "malformed"
+    assert result.reason == reason
+
+
+DOCUMENTED_ALPACA_ORDER_STATUSES = (
+    "accepted",
+    "new",
+    "pending_new",
+    "accepted_for_bidding",
+    "partially_filled",
+    "filled",
+    "done_for_day",
+    "canceled",
+    "expired",
+    "replaced",
+    "pending_cancel",
+    "pending_replace",
+    "rejected",
+    "suspended",
+    "stopped",
+    "calculated",
+    "held",
+)
+
+
+@pytest.mark.parametrize("status", DOCUMENTED_ALPACA_ORDER_STATUSES)
+def test_documented_alpaca_order_statuses_translate_deterministically(status: str) -> None:
+    payload = order()
+    payload["status"] = status
+    if status == "partially_filled":
+        payload["filled_qty"] = "0.5"
+    elif status == "filled":
+        payload["filled_qty"] = "1"
+    result = broker(
+        [HttpResponse(200, {}, b"[]"), HttpResponse(200, {}, json.dumps([payload]).encode())]
+    ).read_snapshot()
+    assert not isinstance(result, BrokerError)
+    assert result.orders[0].status is OrderStatus(status)
+
+
+def test_held_historical_order_does_not_poison_valid_snapshot() -> None:
+    payload = order()
+    payload["status"] = "held"
+    result = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([payload]).encode()),
+        ]
+    ).read_snapshot()
+    assert not isinstance(result, BrokerError)
+    assert result.orders[0].status is OrderStatus.HELD
+
+
+def test_unknown_order_status_fails_closed_with_specific_diagnostic() -> None:
+    payload = order()
+    payload["status"] = "future_status"
+    result = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([payload]).encode()),
+        ]
+    ).read_snapshot()
+    assert isinstance(result, BrokerError)
+    assert result.reason == "unsupported PAPER order status"
+
+
+def test_snapshot_accepts_empty_inventory_one_position_and_historical_order() -> None:
+    empty = broker([HttpResponse(200, {}, b"[]"), HttpResponse(200, {}, b"[]")]).read_snapshot()
+    assert not isinstance(empty, BrokerError)
+    position = broker(
+        [
+            HttpResponse(200, {}, b'[{"symbol":"SPY","qty":"1"}]'),
+            HttpResponse(200, {}, b"[]"),
+        ]
+    ).read_snapshot()
+    assert not isinstance(position, BrokerError)
+    historical = order()
+    historical["status"] = "calculated"
+    orders = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([historical]).encode()),
+        ]
+    ).read_snapshot()
+    assert not isinstance(orders, BrokerError)
+
+
+@pytest.mark.parametrize(
+    ("positions", "orders", "reason"),
+    [
+        (b"{}", b"[]", "malformed PAPER positions response"),
+        (b'[{"symbol":"SPY","qty":"0"}]', b"[]", "malformed PAPER position row"),
+        (b"[]", b"{}", "malformed PAPER orders response"),
+        (b"[]", b'[{"status":"new"}]', "malformed PAPER order row"),
+    ],
+)
+def test_snapshot_failure_diagnostics_are_specific(
+    positions: bytes, orders: bytes, reason: str
+) -> None:
+    result = broker(
+        [HttpResponse(200, {}, positions), HttpResponse(200, {}, orders)]
+    ).read_snapshot()
+    assert isinstance(result, BrokerError)
+    assert result.reason == reason
+
+
+def test_full_documented_order_page_fails_closed_as_incomplete() -> None:
+    payload = order()
+    result = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([payload] * 500).encode()),
+        ]
+    ).read_snapshot()
+    assert isinstance(result, BrokerError)
+    assert result.reason == "incomplete PAPER order history/result window"

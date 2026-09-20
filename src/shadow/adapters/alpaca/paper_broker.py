@@ -12,6 +12,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -181,6 +182,8 @@ class AlpacaPaperBroker:
         if timeout_seconds <= 0:
             raise AlpacaPaperError("positive transport timeout required")
         self._credentials = credentials
+        # The stable SHAD0W binding is Alpaca's human-facing account_number,
+        # never its separate UUID-shaped `id` field.
         self._account_id = account_id
         self._scope = operational_scope
         self._transport = UrllibTransport() if transport is None else transport
@@ -236,7 +239,13 @@ class AlpacaPaperBroker:
 
     def _order(self, payload: dict[str, object], received: datetime, reference: str) -> BrokerOrder:
         try:
-            status = OrderStatus(str(payload["status"]))
+            raw_status = payload["status"]
+            if not isinstance(raw_status, str):
+                raise AlpacaPaperError("unsupported PAPER order status")
+            try:
+                status = OrderStatus(raw_status)
+            except ValueError as exc:
+                raise AlpacaPaperError("unsupported PAPER order status") from exc
             side = OrderSide(str(payload["side"]))
             order_type = OrderType(str(payload.get("type", payload.get("order_type"))))
             tif = TimeInForce(str(payload["time_in_force"]))
@@ -267,8 +276,10 @@ class AlpacaPaperBroker:
                 None if payload.get("replaces") is None else str(payload["replaces"]),
                 None if payload.get("replaced_by") is None else str(payload["replaced_by"]),
             )
-        except (KeyError, ValueError) as exc:
-            raise AlpacaPaperError("provider order response is malformed or unsupported") from exc
+        except (KeyError, ValueError, AlpacaPaperError) as exc:
+            if isinstance(exc, AlpacaPaperError) and str(exc) == "unsupported PAPER order status":
+                raise
+            raise AlpacaPaperError("malformed PAPER order row") from exc
 
     def read_account(self) -> BrokerAccount | BrokerError:
         response, received = self._call("GET", "/v2/account")
@@ -276,7 +287,19 @@ class AlpacaPaperBroker:
             return self._error(response, received, "account")
         try:
             payload = _object(response.body)
-            if str(payload["id"]) != self._account_id:
+            provider_account_id = payload["id"]
+            account_number = payload["account_number"]
+            if not isinstance(provider_account_id, str) or not isinstance(account_number, str):
+                raise AlpacaPaperError("PAPER account identity fields are malformed")
+            if not provider_account_id or provider_account_id != provider_account_id.strip():
+                raise AlpacaPaperError("PAPER account UUID is malformed")
+            try:
+                uuid.UUID(provider_account_id)
+            except ValueError as exc:
+                raise AlpacaPaperError("PAPER account UUID is malformed") from exc
+            if not account_number or account_number != account_number.strip():
+                raise AlpacaPaperError("PAPER account number is malformed")
+            if account_number != self._account_id:
                 raise AlpacaPaperError("PAPER account binding mismatch")
             blocked = (
                 payload.get("trading_blocked") is True or payload.get("account_blocked") is True
@@ -295,12 +318,13 @@ class AlpacaPaperBroker:
                 eligible,
                 _decimal(payload["buying_power"]),
                 str(payload.get("currency", "USD")),
+                provider_account_id,
             )
-        except (KeyError, AlpacaPaperError):
+        except (KeyError, AlpacaPaperError) as exc:
             return BrokerError(
                 self._evidence("alpaca:account:malformed", received, received),
                 ErrorCategory.MALFORMED,
-                "malformed PAPER account response",
+                "malformed PAPER account response" if isinstance(exc, KeyError) else str(exc),
             )
 
     def read_clock(self) -> BrokerClock | BrokerError:
@@ -378,45 +402,62 @@ class AlpacaPaperBroker:
         if orders_response.status != 200:
             return self._error(orders_response, orders_received, "orders")
         try:
-            positions_payload = json.loads(positions_response.body.decode("utf-8"))
-            orders_payload = json.loads(orders_response.body.decode("utf-8"))
-            if (
-                not isinstance(positions_payload, list)
-                or not isinstance(orders_payload, list)
-                or len(orders_payload) >= 500
-            ):
-                raise AlpacaPaperError("incomplete PAPER inventory")
+            try:
+                positions_payload = json.loads(positions_response.body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise AlpacaPaperError("malformed PAPER positions response") from exc
+            if not isinstance(positions_payload, list):
+                raise AlpacaPaperError("malformed PAPER positions response")
+            try:
+                orders_payload = json.loads(orders_response.body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise AlpacaPaperError("malformed PAPER orders response") from exc
+            if not isinstance(orders_payload, list):
+                raise AlpacaPaperError("malformed PAPER orders response")
+            # Alpaca documents 500 as the response maximum.  This bounded canary
+            # does not paginate, so a full page cannot establish complete history.
+            if len(orders_payload) >= 500:
+                raise AlpacaPaperError("incomplete PAPER order history/result window")
             position_request = _request_id(positions_response.headers) or "unknown"
             order_request = _request_id(orders_response.headers) or "unknown"
             reference = f"positions:{position_request}|orders:{order_request}"
             evidence = self._evidence(reference, orders_received, orders_received)
-            positions = tuple(
-                BrokerPosition(
-                    evidence, Instrument(str(row["symbol"])), _decimal(row["qty"], positive=True)
-                )
-                for row in positions_payload
-                if isinstance(row, dict)
-            )
-            if len(positions) != len(positions_payload):
-                raise AlpacaPaperError("malformed position row")
-            orders = tuple(
-                self._order(row, orders_received, reference)
-                for row in orders_payload
-                if isinstance(row, dict)
-            )
-            if len(orders) != len(orders_payload):
-                raise AlpacaPaperError("malformed order row")
+            positions: list[BrokerPosition] = []
+            for row in positions_payload:
+                if not isinstance(row, dict):
+                    raise AlpacaPaperError("malformed PAPER position row")
+                try:
+                    positions.append(
+                        BrokerPosition(
+                            evidence,
+                            Instrument(str(row["symbol"])),
+                            _decimal(row["qty"], positive=True),
+                        )
+                    )
+                except (KeyError, ValueError, AlpacaPaperError) as exc:
+                    raise AlpacaPaperError("malformed PAPER position row") from exc
+            orders: list[BrokerOrder] = []
+            for row in orders_payload:
+                if not isinstance(row, dict):
+                    raise AlpacaPaperError("malformed PAPER order row")
+                orders.append(self._order(row, orders_received, reference))
             history_start = min(
                 (order.evidence.observation_time for order in orders), default=orders_received
             )
             return BrokerSnapshot(
-                evidence, positions, orders, True, True, history_start, orders_received
+                evidence,
+                tuple(positions),
+                tuple(orders),
+                True,
+                True,
+                history_start,
+                orders_received,
             )
-        except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError, AlpacaPaperError):
+        except AlpacaPaperError as exc:
             return BrokerError(
                 self._evidence("alpaca:snapshot:malformed", orders_received, orders_received),
                 ErrorCategory.MALFORMED,
-                "malformed or incomplete PAPER inventory",
+                str(exc),
             )
 
     def lookup_order(

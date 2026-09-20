@@ -75,6 +75,7 @@ def _value(value: object, *, request: str) -> dict[str, object]:
             "eligibility": value.eligibility.value,
             "buying_power": None if value.buying_power is None else str(value.buying_power),
             "currency": value.currency,
+            "provider_account_id": value.provider_account_id,
             "evidence": _evidence(value),
         }
     if isinstance(value, BrokerClock):

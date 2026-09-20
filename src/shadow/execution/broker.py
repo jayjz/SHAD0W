@@ -60,6 +60,7 @@ class OrderStatus(StrEnum):
     ACCEPTED = "accepted"
     NEW = "new"
     PENDING_NEW = "pending_new"
+    ACCEPTED_FOR_BIDDING = "accepted_for_bidding"
     PARTIALLY_FILLED = "partially_filled"
     FILLED = "filled"
     REJECTED = "rejected"
@@ -71,6 +72,8 @@ class OrderStatus(StrEnum):
     DONE_FOR_DAY = "done_for_day"
     SUSPENDED = "suspended"
     STOPPED = "stopped"
+    CALCULATED = "calculated"
+    HELD = "held"
     UNKNOWN = "unknown"
 
 
@@ -147,12 +150,15 @@ class BrokerAccount:
     eligibility: Eligibility
     buying_power: Decimal | None
     currency: str
+    provider_account_id: str | None = None
 
     def __post_init__(self) -> None:
         _evidence(self.evidence)
         _require(self.target is OrderTarget.PAPER, "paper account required")
         _require(isinstance(self.eligibility, Eligibility), "expected Eligibility")
         _text(self.currency)
+        if self.provider_account_id is not None:
+            _text(self.provider_account_id)
         if self.buying_power is not None:
             _decimal(self.buying_power)
         _require(
