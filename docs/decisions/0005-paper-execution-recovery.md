@@ -21,11 +21,26 @@ transaction with a broker. The journal must use durable commits, integrity check
 uniqueness constraints, and an exclusive process lock on supported local storage.
 No Redis, remote database, worker queue, or distributed owner is required.
 
+The owner is account-wide, keyed in one fixed local ownership directory, so an
+alternate scope or journal path cannot bypass the dedicated paper account's owner.
+This advisory Linux lock is not distributed coordination and does not protect
+against shared filesystems, multi-host execution, hostile local code, or forked
+dispatch. A self-consistent rollback of the entire local storage image is not
+detectable from SQLite alone. Storage failure blocks dispatch, and no lock or
+journal file is deleted to recover authority.
+
 Network submission is never described as exactly once. A deterministic Alpaca
 `client_order_id` locates broker evidence; it does not make repeated POSTs safe.
 Timeout, disconnect, lost response, or crash after the dispatch marker creates
 uncertainty. All new submissions halt while reconciliation runs. The canary never
 automatically resubmits an attempted intent, even after a not-found lookup.
+
+Stable source keys bind account/scope, causal feed lineage, completed-bar identity,
+strategy identity, and feature identity before delivery metadata can vary. The
+first feature/signal/intent binding is immutable. A durable absence of a dispatch
+marker is distinct from a committed potentially-submitted attempt; the latter is
+permanently spent. Missing order history or execution history proves neither
+absence nor fills and remains unresolved pending sufficient broker evidence.
 
 Submission requires fresh independent risk evaluation plus current account,
 clock, controls, and durable capacity checks immediately before dispatch. Local

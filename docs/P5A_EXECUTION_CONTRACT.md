@@ -85,6 +85,17 @@ schema version/migration policy. Network filesystems and multi-host operation ar
 outside this design. Never delete, recreate, or roll back a journal to recover
 capacity; lost/restored/stale storage requires operator recovery and reconciliation.
 
+Ownership is account-wide: one dedicated paper account has one authoritative local
+journal and one owner lock in a fixed local ownership directory. Changing scope or
+journal path cannot create a second owner for that account. The Linux advisory lock
+is a local operational guard, not distributed coordination or hostile-process
+security; shared/network filesystems, multi-host operation, and forked dispatch are
+unsupported. PID data is diagnostic only. Never delete a lock file to clear a
+stale owner. A journal cannot prove an undetectable rollback of its whole storage
+image, so a restored or stale image requires operator recovery and reconciliation.
+Storage errors that prevent a durable record must immediately prevent dispatch;
+logs or process memory cannot substitute for the missing record.
+
 Persist append-only transition evidence and transactionally maintained projections:
 run/configuration/code identity; stable account binding and scope; market/feature/
 signal lineage; full intent and payload fingerprint; first admission decision;
@@ -103,6 +114,17 @@ unchanged for executable identity. Record a stable source-opportunity key and bi
 its first canonical feature/availability evidence so a reconnect, new receipt time,
 or session name cannot manufacture another opportunity from the same source bar.
 Configuration changes are explicit migrations, never a retry mechanism.
+
+The source key is canonical causal identity: stable account/scope and feed or
+dataset lineage, instrument, completed-bar observation identity, strategy
+identity/version, and feature identity/version/window. Session IDs, reconnect
+counters, receipt times, and mutable display labels are excluded. The first
+feature/signal/intent binding under that key is immutable; a material variant is a
+conflict and halts. An intact journal record proving no `dispatch_started` was ever
+committed is distinct from a potentially-submitted attempt. Any committed attempt,
+including one recovered with no durable response, is permanently spent and
+uncertain until broker-authoritative reconciliation; missing broker history does
+not prove that it was not submitted.
 
 The Alpaca mapping is versioned and deterministic:
 
@@ -194,6 +216,8 @@ about acceptance or fills. Bounded read retries may run with backoff; exhausted
 budgets leave the application halted. Only matching authoritative evidence can
 resolve acceptance/rejection/terminal status and associated exposure. Inconsistent
 or insufficient evidence stays unresolved and requires operator investigation.
+Historical execution evidence that the provider cannot cover remains unresolved;
+P5A.3 must not infer missing fills, prices, or absence from a snapshot or stream.
 
 Reconciliation precedes any consideration of retry. The canary deliberately has
 **no automatic POST retry**, even if absence seems established. A resolved attempt

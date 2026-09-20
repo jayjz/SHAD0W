@@ -56,6 +56,14 @@ Transaction rollback cannot expose a capability. Durable daily attempts survive
 restart/date rollover; uncertain attempts are not refunded. No broker calls or
 automatic storage recreation/migration that discards evidence.
 
+P5A.2A provides only the prerequisite foundation: versioned canonical codecs,
+stable source bindings, deterministic paper client IDs, account-wide local
+ownership, and explicit create/reopen journal identity. It creates no event,
+reservation, capability, projection, reconciliation, or dispatch authority.
+P5A.2B will add durable event/projection behavior only after that foundation is
+reviewed. A locally intact journal cannot prove a whole-storage rollback; missing
+historical execution evidence remains unresolved until P5A.3.
+
 ## P5A.3 — Broker reconciliation and reservation lifecycle
 
 Scope: add `src/shadow/execution/reconciliation.py` and deterministic lifecycle
