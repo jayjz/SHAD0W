@@ -55,7 +55,7 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P2A deterministic paper risk authority and P4A Alpaca live-data shadow complete**
+**Current milestone: P1B sealed temporal study evidence, P2A deterministic paper risk authority, and P4A Alpaca live-data shadow complete**
 
 **P5A.0 is the documentation and CI foundation for explicitly authorized Alpaca PAPER execution. Broker execution remains unimplemented; live-capital trading remains prohibited.**
 
@@ -73,6 +73,7 @@ Implemented so far:
 | Deterministic fill boundary    | ✅ Complete      | Fresh causal quote-side attempts/outcomes; buy ask, sell bid, explicit unfilled/rejected behavior     |
 | Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
 | Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
+| Sealed study evidence          | ✅ P1B complete   | Frozen datasets, predeclared temporal partitions, declared selection bound to development evidence, and one immutable descriptive final release |
 | Paper risk authority           | ✅ P2A complete   | Deterministic fail-closed decisions, atomic reservations, and one-use dispatch grants                  |
 | Live market data               | ✅ P4A complete   | Alpaca IEX/SIP shadow capture, causal translation, deterministic candidates, no order path          |
 | Alpaca paper execution         | ⏳ P5A.0 foundation | Execution contract, ADR, follow-up tickets and CI; no broker execution yet                              |

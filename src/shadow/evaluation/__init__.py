@@ -12,18 +12,40 @@ from shadow.evaluation.models import (
     TradeEligibility,
     TradeRecord,
 )
+from shadow.evaluation.sealed import (
+    DescriptiveDisposition,
+    DevelopmentSelection,
+    FinalRelease,
+    SealedStudy,
+    SealedStudyError,
+    StudyPlan,
+    descriptive_disposition,
+    load_final_release,
+    persist_final_release,
+    seal_study,
+)
 from shadow.evaluation.trades import TradeReconstructionResult, reconstruct_trades
 
 __all__ = [
     "EVALUATION_MODEL_ID",
     "CurrencyTradeSummary",
+    "DescriptiveDisposition",
+    "DevelopmentSelection",
     "EvaluationError",
     "ExperimentManifest",
     "HistoricalEvaluationResult",
+    "FinalRelease",
+    "SealedStudy",
+    "SealedStudyError",
+    "StudyPlan",
     "TradeEligibility",
     "TradeRecord",
     "TradeReconstructionResult",
     "build_manifest",
     "evaluate_historical",
+    "descriptive_disposition",
+    "load_final_release",
+    "persist_final_release",
     "reconstruct_trades",
+    "seal_study",
 ]
