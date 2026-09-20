@@ -30,3 +30,11 @@ artifacts/
 .DS_Store
 Thumbs.db
 repomix-output.xml
+
+# SHAD0W local PAPER runtime state
+.paper-owner/
+.paper-journal.sqlite
+.paper-journal.sqlite-*
+paper-read-only.json
+paper-canary-result.json
+current-risk-decision.canonical.json
