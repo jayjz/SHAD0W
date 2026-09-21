@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
+from urllib.parse import urlparse
 
 from shadow.adapters.alpaca.normalize import SUPPORTED_FEEDS, symbols_checked, translate
 from shadow.application.evidence import EvidenceWriter, line
@@ -98,8 +99,23 @@ async def _expect(socket: Socket, message: str, rejection_reason: str) -> None:
         frame = decode_frame(await asyncio.wait_for(socket.recv(), 5))
     except (TypeError, ValueError):
         raise _SetupFailure(rejection_reason) from None
-    if frame != [{"T": "success", "msg": message}]:
+    if frame == [{"T": "success", "msg": message}]:
+        return
+    if len(frame) == 1 and frame[0].get("T") == "error":
+        if frame[0].get("code") == 406:
+            raise _SetupFailure("authentication_connection_limit")
         raise _SetupFailure(rejection_reason)
+    raise _SetupFailure(rejection_reason)
+
+
+def _provider_error_disposition(payload: Mapping[str, object]) -> str:
+    """Classify provider errors without retaining messages or authentication data."""
+    code = payload.get("code")
+    if code == 406:
+        return "authentication_connection_limit"
+    if code in (401, 402, 403):
+        return "authentication_rejected"
+    return "provider_error"
 
 
 async def consume(
@@ -146,8 +162,72 @@ async def consume(
             reference = _reference(payload)
             message_type = payload.get("T")
             if message_type == "error":
-                writer.write(session.control("failed", received, "provider_error"))
+                writer.write(
+                    session.control("failed", received, _provider_error_disposition(payload))
+                )
                 raise ValueError("provider returned a market-data error")
+            if message_type not in ("b", "q"):
+                writer.write(session.invalid(received, "unexpected_message", reference))
+                continue
+            try:
+                observation = translate(payload, received_at=received, symbols=symbols, feed=feed)
+            except ValueError as error:
+                writer.write(session.invalid(received, str(error), reference))
+                continue
+            writer.write(session.accept(observation, reference))
+
+
+def _local_feed_url_checked(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "ws" or parsed.hostname not in ("127.0.0.1", "localhost"):
+        raise ValueError("local feed URL must use ws and bind to localhost")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("local feed URL must not contain credentials or query data")
+    if parsed.path not in ("", "/"):
+        raise ValueError("local feed URL must use the relay data path")
+    return url
+
+
+async def consume_local(
+    socket: Socket,
+    session: ShadowSession,
+    writer: EvidenceWriter,
+    *,
+    feed: str,
+    clock: Callable[[], datetime],
+) -> None:
+    """Consume the relay's provider-frame transport without local credentials."""
+    symbols = symbols_checked(
+        tuple(strategy.instrument.identifier for strategy in session.config.strategies)
+    )
+    await socket.send(json.dumps({"action": "subscribe", "bars": symbols, "quotes": symbols}))
+    try:
+        acknowledgement = decode_frame(await asyncio.wait_for(socket.recv(), 5))
+        subscription_is_exact = _subscription_is_exact(acknowledgement, symbols)
+    except (TypeError, ValueError):
+        raise _SetupFailure("local_subscription_mismatch") from None
+    if not subscription_is_exact:
+        raise _SetupFailure("local_subscription_mismatch")
+    writer.write(session.control("connected", clock(), "local_relay"))
+
+    while True:
+        try:
+            raw = await asyncio.wait_for(socket.recv(), 1)
+        except TimeoutError:
+            writer.write(session.control("tick", clock(), "receive_timeout"))
+            continue
+        received = clock()
+        try:
+            frame = decode_frame(raw)
+        except (TypeError, ValueError):
+            writer.write(session.invalid(received, "malformed_frame", _reference(str(raw))))
+            continue
+        for payload in frame:
+            reference = _reference(payload)
+            message_type = payload.get("T")
+            if message_type == "relay":
+                writer.write(session.control("disconnected", received, "local_relay_unavailable"))
+                raise ValueError("local relay reported an unavailable upstream")
             if message_type not in ("b", "q"):
                 writer.write(session.invalid(received, "unexpected_message", reference))
                 continue
@@ -161,18 +241,23 @@ async def consume(
 
 async def run_live(
     session: ShadowSession,
-    credentials: DataCredentials,
+    credentials: DataCredentials | None,
     writer: EvidenceWriter,
     *,
     duration: float,
     feed: str,
+    local_feed_url: str | None = None,
 ) -> None:
-    """Connect only to Alpaca's stock-data endpoint for a bounded shadow run."""
+    """Use direct Alpaca or an explicitly localhost-only provider-frame relay."""
     if not math.isfinite(duration) or not 0 < duration <= 3600:
         raise ValueError("duration must be within (0, 3600] seconds")
     if feed not in SUPPORTED_FEEDS or session.config.source != f"alpaca:{feed}":
         raise ValueError("feed and session source must match real-time iex or sip")
     symbols_checked(tuple(strategy.instrument.identifier for strategy in session.config.strategies))
+    if local_feed_url is None and credentials is None:
+        raise ValueError("direct Alpaca market data requires credentials")
+    if local_feed_url is not None:
+        local_feed_url = _local_feed_url_checked(local_feed_url)
     from websockets.asyncio.client import connect
     from websockets.exceptions import ConnectionClosed
 
@@ -186,7 +271,7 @@ async def run_live(
         for attempt in range(4):
             try:
                 async with connect(
-                    f"wss://stream.data.alpaca.markets/v2/{feed}",
+                    local_feed_url or f"wss://stream.data.alpaca.markets/v2/{feed}",
                     proxy=None,
                     open_timeout=5,
                     close_timeout=2,
@@ -196,7 +281,11 @@ async def run_live(
                     max_size=1_048_576,
                     logger=logger,
                 ) as socket:
-                    await consume(socket, session, credentials, writer, feed=feed, clock=clock)
+                    if local_feed_url is None:
+                        assert credentials is not None
+                        await consume(socket, session, credentials, writer, feed=feed, clock=clock)
+                    else:
+                        await consume_local(socket, session, writer, feed=feed, clock=clock)
                     return
             except (OSError, TimeoutError, ConnectionClosed):
                 writer.write(session.control("disconnected", clock(), "transport_disconnect"))

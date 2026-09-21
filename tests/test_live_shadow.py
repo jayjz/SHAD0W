@@ -13,8 +13,10 @@ import pytest
 from shadow.adapters.alpaca.normalize import translate
 from shadow.adapters.alpaca.stream import (
     DataCredentials,
+    _local_feed_url_checked,
     _subscription_is_exact,
     consume,
+    consume_local,
     decode_frame,
     run_live,
 )
@@ -652,6 +654,10 @@ def test_subscription_acknowledgement_accepts_multiple_symbols_in_any_order() ->
             "authentication_rejected",
         ),
         (
+            [line([{"T": "error", "code": 406, "msg": "connection limit exceeded"}])],
+            "authentication_connection_limit",
+        ),
+        (
             [
                 line([{"T": "success", "msg": "connected"}]),
                 line([{"T": "success", "msg": "authenticated"}]),
@@ -690,6 +696,84 @@ def test_run_live_records_sanitized_setup_failure_reason(
 
     assert shadow.records[-1].action == "failed"
     assert shadow.records[-1].disposition == reason
+
+
+def test_local_relay_transport_preserves_direct_normalization_without_credentials(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "T": "b",
+        "S": "AAPL",
+        "o": 100.0,
+        "h": 101.0,
+        "l": 99.0,
+        "c": 100.5,
+        "v": 12.0,
+        "t": at(0).isoformat().replace("+00:00", "Z"),
+    }
+    direct_socket = _FakeSocket(
+        [
+            line([{"T": "success", "msg": "connected"}]),
+            line([{"T": "success", "msg": "authenticated"}]),
+            line([{"T": "subscription", "bars": ["AAPL"], "quotes": ["AAPL"]}]),
+            line([payload]),
+        ]
+    )
+    local_socket = _FakeSocket(
+        [
+            line([{"T": "subscription", "bars": ["AAPL"], "quotes": ["AAPL"]}]),
+            line([payload]),
+        ]
+    )
+    direct_session = ShadowSession(config())
+    local_session = ShadowSession(config())
+    direct_writer = EvidenceWriter(tmp_path / "direct.jsonl", direct_session.config)
+    local_writer = EvidenceWriter(tmp_path / "local.jsonl", local_session.config)
+    try:
+        with pytest.raises(OSError, match="test transport ended"):
+            asyncio.run(
+                consume(
+                    direct_socket,
+                    direct_session,
+                    DataCredentials("key", "secret"),
+                    direct_writer,
+                    feed="iex",
+                    clock=lambda: at(1),
+                )
+            )
+        with pytest.raises(OSError, match="test transport ended"):
+            asyncio.run(
+                consume_local(
+                    local_socket,
+                    local_session,
+                    local_writer,
+                    feed="iex",
+                    clock=lambda: at(1),
+                )
+            )
+    finally:
+        direct_writer.close()
+        local_writer.close()
+
+    assert direct_session.records[-1].observation == local_session.records[-1].observation
+    assert [json.loads(message) for message in local_socket.sent] == [
+        {"action": "subscribe", "bars": ["AAPL"], "quotes": ["AAPL"]}
+    ]
+    assert "secret" not in "".join(local_socket.sent)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "wss://127.0.0.1:8765",
+        "ws://example.invalid:8765",
+        "ws://127.0.0.1:8765/health",
+        "ws://127.0.0.1:8765/?secret=no",
+    ],
+)
+def test_local_relay_url_must_be_credential_free_loopback_data_path(url: str) -> None:
+    with pytest.raises(ValueError):
+        _local_feed_url_checked(url)
 
 
 def test_stream_uses_session_scope_for_auth_subscription_and_translation(tmp_path: Path) -> None:

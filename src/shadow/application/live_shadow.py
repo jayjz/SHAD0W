@@ -32,6 +32,12 @@ def _parser() -> argparse.ArgumentParser:
         "--feed", choices=SUPPORTED_FEEDS, default=os.environ.get("ALPACA_DATA_FEED", "iex")
     )
     parser.add_argument("--duration-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--local-feed-url",
+        help=(
+            "explicit localhost-only Alpaca provider-frame relay URL; no data credentials are read"
+        ),
+    )
     parser.add_argument("--rolling-window", type=int, default=20)
     parser.add_argument("--entry-threshold", type=Decimal, default=Decimal("-2"))
     parser.add_argument("--exit-threshold", type=Decimal, default=Decimal("0"))
@@ -106,7 +112,11 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
 def main() -> int:
     arguments = _parser().parse_args()
     config = _config(arguments)
-    credentials = DataCredentials.from_environment(os.environ)
+    credentials = (
+        None
+        if arguments.local_feed_url is not None
+        else DataCredentials.from_environment(os.environ)
+    )
     print("SHADOW MODE — NO ORDER SUBMISSION")
     writer = EvidenceWriter(arguments.evidence_path, config)
     try:
@@ -117,6 +127,7 @@ def main() -> int:
                 writer,
                 duration=arguments.duration_seconds,
                 feed=arguments.feed,
+                local_feed_url=arguments.local_feed_url,
             )
         )
     finally:
