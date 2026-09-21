@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 shadow-live-data = "shadow.application.live_shadow:main"
+shadow-paper-prepare = "shadow.application.paper_preparation:main"
 shadow-paper-canary = "shadow.application.paper_canary:main"
 
 [dependency-groups]

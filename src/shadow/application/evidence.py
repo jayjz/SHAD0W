@@ -435,22 +435,24 @@ def _outstanding_order(value: object) -> OutstandingOrder:
 
 
 def _config(value: object) -> ShadowConfig:
-    item = _mapping(
-        value,
-        "capture config",
-        {
-            "session_id",
-            "code_revision",
-            "strategies",
-            "quantities",
-            "risk_policy",
-            "source",
-            "maximum_bar_age",
-            "maximum_quote_age",
-            "observability_state",
-            "maximum_records",
-        },
-    )
+    required = {
+        "session_id",
+        "code_revision",
+        "strategies",
+        "quantities",
+        "risk_policy",
+        "source",
+        "maximum_bar_age",
+        "maximum_quote_age",
+        "observability_state",
+        "maximum_records",
+    }
+    if not isinstance(value, dict) or set(value) not in (
+        required,
+        {*required, "source_dataset_id"},
+    ):
+        raise CaptureError("invalid capture config shape")
+    item = value
     strategies = item["strategies"]
     quantities = item["quantities"]
     if not isinstance(strategies, list) or not isinstance(quantities, list):
@@ -467,6 +469,9 @@ def _config(value: object) -> ShadowConfig:
             _duration(item["maximum_quote_age"], "capture maximum quote age"),
             _risk_state(item["observability_state"]),
             _integer(item["maximum_records"], "capture maximum records"),
+            None
+            if item.get("source_dataset_id") is None
+            else _text(item["source_dataset_id"], "capture source dataset id"),
         )
     except ValueError as error:
         raise CaptureError("invalid capture config") from error

@@ -38,6 +38,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--quantity", type=Decimal, default=Decimal("1"))
     parser.add_argument("--maximum-bar-age-seconds", type=int, default=300)
     parser.add_argument("--maximum-quote-age-seconds", type=int, default=15)
+    parser.add_argument(
+        "--source-dataset-id",
+        help="stable feed/dataset lineage; required when evidence may be prepared for PAPER",
+    )
+    parser.add_argument(
+        "--strategy-configuration-id",
+        help="stable strategy configuration identity; required for PAPER preparation",
+    )
+    parser.add_argument(
+        "--quantity-configuration-id",
+        help="stable operational quantity identity; required for PAPER preparation",
+    )
     return parser
 
 
@@ -48,7 +60,10 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
     strategies = tuple(
         MeanReversionConfig(
             instrument=instrument,
-            configuration_id=f"{arguments.session_id}:{instrument.identifier}:mean-reversion-v1",
+            configuration_id=(
+                arguments.strategy_configuration_id
+                or f"{arguments.session_id}:{instrument.identifier}:mean-reversion-v1"
+            ),
             rolling_window=arguments.rolling_window,
             entry_threshold=arguments.entry_threshold,
             exit_threshold=arguments.exit_threshold,
@@ -59,7 +74,8 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
     quantities = tuple(
         OperationalQuantityConfig(
             instrument,
-            f"{arguments.session_id}:{instrument.identifier}:quantity-v1",
+            arguments.quantity_configuration_id
+            or f"{arguments.session_id}:{instrument.identifier}:quantity-v1",
             arguments.quantity,
         )
         for instrument in instruments
@@ -83,6 +99,7 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
         source=f"alpaca:{arguments.feed}",
         maximum_bar_age=feature_age,
         maximum_quote_age=timedelta(seconds=arguments.maximum_quote_age_seconds),
+        source_dataset_id=arguments.source_dataset_id,
     )
 
 

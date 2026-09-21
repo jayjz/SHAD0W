@@ -627,6 +627,19 @@ shadow-live-data --session-id example-2025-01-02 --code-revision <commit> --symb
 
 The command prints `SHADOW MODE — NO ORDER SUBMISSION`. It contains no Alpaca trading client, account endpoint, submit/cancel/replace operation, or broker state claim.
 
+For a capture that may later be presented to the supervised PAPER preparation
+boundary, declare stable source and configuration identities rather than relying
+on the session ID:
+
+```bash
+shadow-live-data --session-id spy-observation-2026-09-21 --code-revision <commit> \
+  --symbol SPY --feed iex --duration-seconds 1200 \
+  --source-dataset-id alpaca:iex:spy-1m-v1 \
+  --strategy-configuration-id spy-mean-reversion-v1 \
+  --quantity-configuration-id paper-spy-one-share-v1 \
+  --evidence-path ./shadow-spy-observation.jsonl
+```
+
 ---
 
 ### P5A — Alpaca paper execution ⏳
@@ -644,10 +657,11 @@ revalidation, and broker-authoritative reconciliation must precede activation.
 Uncertain submission halts new orders; client IDs support reconciliation and never
 justify blind POST retries. Broker SDK types remain at adapter boundaries.
 
-Follow-up tickets must prove restart recovery, reservation transitions, and live
-entry/lifecycle-backed exit behavior before a separately approved supervised run.
-P4A remains a separate market-data-only command. No live capital or strategy
-validation is authorized or claimed.
+The supervised one-shot canary is still bounded to one human-armed PAPER entry;
+its read-only candidate-preparation bridge is documented in
+[the canary runbook](docs/P5A_CANARY_RUNBOOK.md). P4A remains a separate
+market-data-only command. No live capital or strategy validation is authorized or
+claimed.
 
 ---
 

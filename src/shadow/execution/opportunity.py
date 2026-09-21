@@ -162,3 +162,31 @@ class SourceOpportunityRegistry:
         if existing.evidence_digest != candidate.evidence_digest:
             raise SourceOpportunityError("materially changed evidence for source opportunity")
         return existing
+
+
+def source_opportunity_key_for_intent(
+    *, account_id: str, operational_scope: str, intent: OrderIntent
+) -> SourceOpportunityKey:
+    """Derive the stable causal key represented by one existing order intent.
+
+    This deliberately uses source-bar and strategy evidence only.  Delivery time,
+    quote receipt time, session IDs, and mutable display labels are not inputs.
+    """
+    if not isinstance(intent, OrderIntent):
+        raise SourceOpportunityError("intent must be an OrderIntent")
+    if intent.operational_scope != operational_scope:
+        raise SourceOpportunityError("intent scope does not match source opportunity scope")
+    signal = intent.source_signal
+    return SourceOpportunityKey(
+        account_id=account_id,
+        operational_scope=operational_scope,
+        feed_lineage=signal.source_dataset_id,
+        instrument=intent.instrument,
+        completed_bar_observation_time=signal.feature_observation_time,
+        strategy_id=signal.strategy_id,
+        strategy_version=signal.strategy_version,
+        feature_name=signal.feature_name,
+        feature_input=signal.feature_input,
+        feature_implementation_version=signal.feature_implementation_version,
+        feature_window=signal.feature_window,
+    )

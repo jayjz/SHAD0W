@@ -24,6 +24,7 @@ from shadow.execution.broker import (
 from shadow.execution.dispatch import CanaryDispatcher
 from shadow.execution.journal import ExecutionJournal
 from shadow.execution.journal_codec import decode_canonical
+from shadow.execution.opportunity import source_opportunity_key_for_intent
 from shadow.execution.ownership import AccountOwner
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, RiskDecision, TimeInForce
 
@@ -194,6 +195,16 @@ def main() -> int:
     decision = _decision(arguments.risk_decision_path)
     if decision.intent.side is not OrderSide.BUY or decision.intent.instrument != instrument:
         raise SystemExit("first canary accepts only its matching BUY risk decision")
+    try:
+        expected_source_opportunity_id = source_opportunity_key_for_intent(
+            account_id=arguments.account_id,
+            operational_scope=arguments.operational_scope,
+            intent=decision.intent,
+        ).source_key
+    except ValueError as exc:
+        raise SystemExit("risk decision cannot establish a source opportunity binding") from exc
+    if arguments.source_opportunity_id != expected_source_opportunity_id:
+        raise SystemExit("source opportunity does not match the supplied risk decision")
     identity = derive_paper_client_order_identity(
         stable_account_binding=arguments.account_id,
         operational_scope=arguments.operational_scope,

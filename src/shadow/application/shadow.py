@@ -59,6 +59,7 @@ class ShadowConfig:
     maximum_quote_age: timedelta
     observability_state: RiskState | None = None
     maximum_records: int = 100_000
+    source_dataset_id: str | None = None
 
     def __post_init__(self) -> None:
         instruments = tuple(config.instrument for config in self.strategies)
@@ -74,6 +75,11 @@ class ShadowConfig:
             raise ValueError("positive feed freshness bounds required")
         if isinstance(self.maximum_records, bool) or self.maximum_records < 1:
             raise ValueError("positive evidence record bound required")
+        if self.source_dataset_id is not None and (
+            not self.source_dataset_id.strip()
+            or self.source_dataset_id != self.source_dataset_id.strip()
+        ):
+            raise ValueError("source dataset identity must be a nonempty trimmed string")
         if (
             self.observability_state is not None
             and self.observability_state.operational_scope != self.session_id
@@ -315,7 +321,7 @@ class ShadowSession:
                 del history[: -strategy.rolling_window]
                 metadata = DatasetMetadata(
                     self.config.source,
-                    self.config.session_id,
+                    self.config.source_dataset_id or self.config.session_id,
                     (observation.instrument,),
                     history[0].observation_time,
                     observation.observation_time,
