@@ -211,6 +211,7 @@ class CryptoEvidenceHeader:
     code_revision: str
     implementation_versions: dict[str, str]
     numeric_time_policy: dict[str, str]
+    capture_limits: dict[str, object] | None = None
 
     def encode(self) -> dict[str, object]:
         return {
@@ -223,6 +224,7 @@ class CryptoEvidenceHeader:
             "requested_channels": ["trades", "quotes", "orderbooks"],
             "implementation_versions": self.implementation_versions,
             "numeric_time_policy": self.numeric_time_policy,
+            "capture_limits": self.capture_limits,
         }
 
 
@@ -239,7 +241,14 @@ class CryptoEvidenceWriter:
         self._file.flush()
 
     def append(
-        self, result: CryptoSessionResult, *, frame_sequence: int, element_index: int
+        self,
+        result: CryptoSessionResult,
+        *,
+        frame_sequence: int,
+        element_index: int,
+        source_timestamp: str | None = None,
+        receipt_monotonic_ns: int | None = None,
+        raw_frame_sha256: str | None = None,
     ) -> dict[str, object]:
         if self._terminal:
             raise CryptoEvidenceError("terminal record already written")
@@ -257,6 +266,9 @@ class CryptoEvidenceWriter:
             "book_quality": result.snapshot.quality.value if result.snapshot else None,
             "snapshot": _snapshot(result.snapshot),
             "previous_record_hash": self._previous,
+            "source_timestamp": source_timestamp,
+            "receipt_monotonic_ns": receipt_monotonic_ns,
+            "raw_frame_sha256": raw_frame_sha256,
         }
         payload["state_lineage"] = hashlib.sha256(
             (self._previous + canonical_json(payload["event"])).encode("utf-8")

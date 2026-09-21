@@ -2,9 +2,9 @@
 
 Status: C0 provider-neutral values and their local validation are implemented in
 `shadow.domain.crypto_market`. C1.1/C1.2 normalization, deterministic book
-reconstruction and offline capture/replay are implemented; connectivity and
-descriptive measurements remain planned. This document freezes their semantic
-boundary, not a claim of transport runtime support.
+reconstruction and offline capture/replay are implemented. C1.3 adds bounded
+Alpaca `crypto/us` transport, data-only credentials, reset-gated capture and
+clock-free replay; descriptive measurements remain planned.
 
 ## Authority and scope
 
@@ -193,9 +193,10 @@ authorized execution work. None changes SHAD0W's execution envelope.
 
 C0 itself adds no connectivity, parsing, reducer, persistence, replay, feature
 calculation, execution, risk, strategy, position lifecycle or continuous operation.
-C1.1/C1.2 now provide synthetic/offline normalization, deterministic book
-reconstruction, session lifecycle ownership, canonical hash-chained evidence, and
-clock-free replay. Transport collection, credentials, measurements and all execution
-authority remain out of scope. Future transport work must independently prove arrival
-ordering, reset recovery, immutable evidence, corruption rejection and absence of
-order authority.
+C1.1/C1.2 provide synthetic/offline normalization, deterministic book reconstruction,
+session lifecycle ownership, canonical hash-chained evidence, and clock-free replay.
+C1.3 adds a bounded data-only WebSocket collector that samples wall-clock and
+monotonic receipt nanoseconds before decoding every frame, requires exact
+authentication/subscription acknowledgement and fresh BTC/USD plus ETH/USD resets,
+and fails closed on malformed data or bounded-resource exhaustion. Measurements and
+all execution authority remain out of scope.
