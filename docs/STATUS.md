@@ -9,6 +9,10 @@ implementation claim.
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the
   [crypto market-data contract](CRYPTO_MARKET_DATA_CONTRACT.md).
+- **Crypto C1.2:** deterministic offline session ownership, canonical JSONL
+  evidence, hash-chained persistence, and clock-free replay for normalized BTC/USD
+  and ETH/USD observations. No WebSocket capture, credentials, execution, risk, or
+  strategy authority is included.
 
 - **P0 research/data/features/simulation:** deterministic provider-neutral market
   contracts, feature kernel, mean-reversion hypothesis, chronological lifecycle,
@@ -44,8 +48,8 @@ implementation claim.
 
 ## DESIGNED ONLY
 
-- **Crypto C1 market-data evidence:** normalization, bounded capture, book
-  reconstruction, offline replay and descriptive measurements are planned.
+- **Crypto C1 transport and measurements:** WebSocket capture, authentication,
+  bounded live collection, and descriptive measurements remain planned.
 
 - **P5A.3:** broker-authoritative reconciliation and operational lifecycle
   projection.

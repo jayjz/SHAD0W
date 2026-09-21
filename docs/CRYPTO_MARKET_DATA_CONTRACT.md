@@ -1,9 +1,10 @@
 # Crypto market-data contract — C0
 
 Status: C0 provider-neutral values and their local validation are implemented in
-`shadow.domain.crypto_market`. C1 normalization, connectivity, book reconstruction,
-capture/replay and descriptive measurements are planned, not implemented. This
-document freezes their semantic boundary, not a claim of runtime support.
+`shadow.domain.crypto_market`. C1.1/C1.2 normalization, deterministic book
+reconstruction and offline capture/replay are implemented; connectivity and
+descriptive measurements remain planned. This document freezes their semantic
+boundary, not a claim of transport runtime support.
 
 ## Authority and scope
 
@@ -190,8 +191,11 @@ limit, stop_limit, GTC/IOC and qty/notional; trading is 24/7. Conflicting generi
 notional prose and GTC example wording require clarification before any separately
 authorized execution work. None changes SHAD0W's execution envelope.
 
-C0 adds no connectivity, parsing, reducer, persistence, replay, feature calculation,
-execution, risk, strategy, position lifecycle or continuous operation. Tests are
-synthetic and offline. Later C1 work must independently prove arrival ordering,
-reset recovery, immutable evidence, offline deterministic replay, corruption
-rejection and absence of order authority before status may claim implementation.
+C0 itself adds no connectivity, parsing, reducer, persistence, replay, feature
+calculation, execution, risk, strategy, position lifecycle or continuous operation.
+C1.1/C1.2 now provide synthetic/offline normalization, deterministic book
+reconstruction, session lifecycle ownership, canonical hash-chained evidence, and
+clock-free replay. Transport collection, credentials, measurements and all execution
+authority remain out of scope. Future transport work must independently prove arrival
+ordering, reset recovery, immutable evidence, corruption rejection and absence of
+order authority.
