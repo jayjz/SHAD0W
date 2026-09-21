@@ -1,7 +1,9 @@
 # P5A one-shot Alpaca PAPER canary
 
-This is a supervised, one-order PAPER procedure. It is not a daemon, a strategy
-validation, an exit procedure, or permission to use an Alpaca live account.
+This is an early bounded supervised, one-order PAPER integration probe. It is not
+the final P5A.8 acceptance canary, a daemon, a strategy validation, an exit
+procedure, broker-authoritative reconciliation, or permission to use an Alpaca live
+account.
 
 ## Preconditions
 
@@ -101,6 +103,7 @@ shadow-paper-canary --arm-paper-order \
 
 On any timeout, disconnect, malformed response, response-persistence error, 404
 lookup, incomplete snapshot, or conflict, treat the result as unresolved. Do not
-rerun the armed command to retry the order: it will only reconcile the committed
-client ID and halt if evidence remains insufficient. Preserve the journal and all
-JSON evidence for operator review.
+rerun the armed command to retry the order: it only performs limited evidence checks
+for the committed client ID and halts if evidence remains insufficient. It does not
+perform P5A.3 broker-authoritative reconciliation or recover capacity. Preserve the
+journal and all JSON evidence for operator review.

@@ -8,7 +8,11 @@ SHAD0W is an experimental quantitative research platform built around a simple r
 
 The project is designed to move from raw market observations to reproducible strategy evidence while explicitly modeling information availability, signal causality, execution timing, lifecycle state, transaction friction, and eventually independent risk controls.
 
-SHAD0W is currently a **research simulator with live market-data shadow observation**. It has no broker trading/account connection or order submission and makes no claim that its initial strategy is profitable.
+SHAD0W is currently a deterministic research system with live market-data shadow
+observation and an early bounded supervised one-shot Alpaca PAPER integration
+probe. It does not provide continuous PAPER trading, broker-authoritative lifecycle
+reconciliation, live-capital support, or a profitability claim. See
+[the current implementation status](docs/STATUS.md).
 
 ---
 
@@ -55,9 +59,11 @@ Automation comes after evidence.
 
 ## Current status
 
-**Current milestone: P2A deterministic paper risk authority and P4A Alpaca live-data shadow complete**
+**Current capabilities: deterministic research/evaluation, P2A risk, P4A shadow,
+warm-start, and a bounded one-shot PAPER integration probe.**
 
-**P5A.0 is the documentation and CI foundation for explicitly authorized Alpaca PAPER execution. Broker execution remains unimplemented; live-capital trading remains prohibited.**
+**P5A.3 reconciliation/lifecycle and continuous PAPER operation are not
+implemented. Live-capital trading remains prohibited.**
 
 Implemented so far:
 
@@ -74,8 +80,8 @@ Implemented so far:
 | Execution economics           | ✅ P0.5 complete  | Quote-side pricing, adverse slippage, fixed declared quantity, and synthetic proportional fee evidence          |
 | Evaluation engine              | ✅ P1A complete   | Manifest-bound trade reconstruction, stress classification, and currency-separated descriptive totals |
 | Paper risk authority           | ✅ P2A complete   | Deterministic fail-closed decisions, atomic reservations, and one-use dispatch grants                  |
-| Live market data               | ✅ P4A complete   | Alpaca IEX/SIP shadow capture, causal translation, deterministic candidates, no order path          |
-| Alpaca paper execution         | ⏳ P5A.0 foundation | Execution contract, ADR, follow-up tickets and CI; no broker execution yet                              |
+| Live market data               | ✅ P4A complete   | Alpaca IEX/SIP shadow capture, warm-start, FLAT observational candidates, no P4A order path          |
+| Early PAPER integration        | ⚠️ Bounded probe  | PAPER adapter, journal, preparation, guarded one-shot human-armed entry; no lifecycle/reconciliation |
 | LLM event intelligence         | ⏳ Research-gated | Semantic event classification with observational authority only                                       |
 
 ---
@@ -95,7 +101,7 @@ flowchart TD
     E --> H["Paper OrderIntent"]
     H --> I["Independent Risk Decision"]
     I --> J["Atomic Admission + Reservation"]
-    J -. future submission revalidation .-> O["Paper Broker Adapter"]
+    J -. bounded one-shot probe .-> O["PAPER Broker Adapter"]
 
     K["News / Filings / Events"] -. future .-> L["Semantic Event Classifier"]
     L -. typed EventRiskState .-> I
@@ -104,7 +110,6 @@ flowchart TD
     N["Live Market Data"] --> A
     style K stroke-dasharray: 5 5
     style L stroke-dasharray: 5 5
-    style O stroke-dasharray: 5 5
 ```
 
 The core authority model is:
@@ -577,7 +582,7 @@ signal proposes
 risk authorizes or rejects
 gate admits and reserves once
 one application claim records consumption
-future broker requires submission-time revalidation
+external broker dispatch requires submission-time revalidation
 ```
 
 P2A has no live data, broker connection, external submission, persistence, restart reconciliation, cash, buying power, P&L, portfolio accounting, or live-capital authority. Disabled trading and the kill switch freeze new entry and exit admissions for this milestone; they are not a liquidation mechanism and do not revoke existing claims.
@@ -622,17 +627,18 @@ Completed bars independently drive the existing feature and mean-reversion candi
 Run a bounded session after setting the documented credentials as process-environment variables. `.env.example` documents their names only; the application does not load `.env` automatically:
 
 ```powershell
-shadow-live-data --session-id example-2025-01-02 --code-revision <commit> --symbol AAPL --feed iex --duration-seconds 60 --evidence-path .\shadow-aapl.jsonl
+shadow-live-data --session-id example-2025-01-02 --operational-scope paper-primary --code-revision <commit> --symbol AAPL --feed iex --duration-seconds 60 --source-dataset-id alpaca:iex:aapl-1m-v1 --strategy-configuration-id aapl-mean-reversion-v1 --quantity-configuration-id paper-aapl-one-share-v1 --evidence-path .\shadow-aapl.jsonl
 ```
 
 The command prints `SHADOW MODE — NO ORDER SUBMISSION`. It contains no Alpaca trading client, account endpoint, submit/cancel/replace operation, or broker state claim.
 
 For a capture that may later be presented to the supervised PAPER preparation
 boundary, declare stable source and configuration identities rather than relying
-on the session ID:
+on the session ID. `session_id` is evidence/run identity only; `operational_scope`
+is the stable risk, preparation, journal, and eventual execution authority:
 
 ```bash
-shadow-live-data --session-id spy-observation-2026-09-21 --code-revision <commit> \
+shadow-live-data --session-id spy-observation-2026-09-21 --operational-scope paper-primary --code-revision <commit> \
   --symbol SPY --feed iex --duration-seconds 1200 \
   --source-dataset-id alpaca:iex:spy-1m-v1 \
   --strategy-configuration-id spy-mean-reversion-v1 \
@@ -640,28 +646,42 @@ shadow-live-data --session-id spy-observation-2026-09-21 --code-revision <commit
   --evidence-path ./shadow-spy-observation.jsonl
 ```
 
+To reduce cold-start feature latency, a new bounded session may seed only verified
+completed-bar history from an earlier stopped capture. The stable source and
+strategy identities must remain exactly the same; this does not reuse quotes or
+create a candidate before a newly received live bar:
+
+```bash
+shadow-live-data --session-id spy-observation-2026-09-21b --operational-scope paper-primary --code-revision <commit> \
+  --symbol SPY --feed iex --duration-seconds 1200 \
+  --source-dataset-id alpaca:iex:spy-1m-v1 \
+  --strategy-configuration-id spy-mean-reversion-v1 \
+  --quantity-configuration-id paper-spy-one-share-v1 \
+  --bootstrap-capture ./shadow-spy-observation.jsonl \
+  --evidence-path ./shadow-spy-observation-warm.jsonl
+```
+
+The bootstrap artifact is verified and identified by content digest in the new
+capture; its local path is not causal identity. Incompatible, incomplete, future,
+out-of-order, or conflicting history fails closed; older valid historical context
+is permitted. The normal command without this flag retains the original cold-start
+behavior.
+
 ---
 
-### P5A — Alpaca paper execution ⏳
+### P5A — bounded PAPER integration probe ⚠️
 
-P5A.0 establishes the [execution contract](docs/P5A_EXECUTION_CONTRACT.md),
-[ADR 0005](docs/decisions/0005-paper-execution-recovery.md),
-[dependency-ordered implementation tickets](docs/P5A_EXECUTION_PLAN.md), and
-Python 3.12 CI. It introduces no executable broker path, trading credentials,
-account connection, SDK, or HTTP dependency.
+HEAD includes provider-neutral broker contracts, a fixed PAPER-only Alpaca adapter,
+durable journal/ownership, source-opportunity identity, read-only risk preparation,
+and a guarded human-armed one-shot SPY BUY canary. It can submit one PAPER order
+under the documented runbook; it is not the originally planned final P5A.8
+acceptance canary.
 
-The future canary is Alpaca paper only: one operator-approved liquid equity, one
-whole share, market/DAY, regular hours, one concurrent position, and a durable
-daily submission ceiling. A local transactional journal, submission-time risk
-revalidation, and broker-authoritative reconciliation must precede activation.
-Uncertain submission halts new orders; client IDs support reconciliation and never
-justify blind POST retries. Broker SDK types remain at adapter boundaries.
-
-The supervised one-shot canary is still bounded to one human-armed PAPER entry;
-its read-only candidate-preparation bridge is documented in
-[the canary runbook](docs/P5A_CANARY_RUNBOOK.md). P4A remains a separate
-market-data-only command. No live capital or strategy validation is authorized or
-claimed.
+There is no broker-authoritative reconciliation/lifecycle projection, continuous
+PAPER application, automatic retry/recovery, or live-capital support. P4A remains a
+separate market-data-only command. See [STATUS.md](docs/STATUS.md),
+[the execution plan](docs/P5A_EXECUTION_PLAN.md), and
+[the one-shot runbook](docs/P5A_CANARY_RUNBOOK.md).
 
 ---
 

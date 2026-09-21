@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -38,6 +39,7 @@ from shadow.execution.opportunity import (
     SourceOpportunityError,
     SourceOpportunityKey,
     SourceOpportunityRegistry,
+    source_opportunity_key_for_intent,
 )
 from shadow.execution.ownership import AccountOwner, OwnershipError
 from shadow.features import (
@@ -107,6 +109,8 @@ def binding(*, feature_value: Decimal = Decimal("-2.5")) -> SourceOpportunityBin
         completed_bar_observation_time=NOW,
         strategy_id=signal.strategy_id,
         strategy_version=signal.strategy_version,
+        strategy_configuration_id=signal.configuration_id,
+        signal_type=signal.signal_type,
         feature_name=FeatureName.Z_SCORE,
         feature_input=FeatureInput.CLOSE,
         feature_implementation_version="shadow.features.v1",
@@ -168,6 +172,37 @@ def test_source_binding_deduplicates_reconnect_and_rejects_material_variant() ->
     assert reconnect.key.source_key == original.key.source_key
     with pytest.raises(SourceOpportunityError, match="materially changed"):
         registry.bind(binding(feature_value=Decimal("-3")))
+
+
+def test_source_key_versions_configuration_and_signal_direction() -> None:
+    original = binding()
+    changed_configuration_signal = replace(original.signal, configuration_id="strategy-v2")
+    changed_configuration = OrderIntent.from_signal(
+        operational_scope="paper-scope",
+        signal=changed_configuration_signal,
+        quantity_config=OperationalQuantityConfig(SPY, "quantity-v1", Decimal(1)),
+    )
+    exit_signal = replace(original.signal, signal_type=SignalType.EXIT)
+    exit_intent = OrderIntent.from_signal(
+        operational_scope="paper-scope",
+        signal=exit_signal,
+        quantity_config=OperationalQuantityConfig(SPY, "quantity-v1", Decimal(1)),
+    )
+
+    def key(intent: OrderIntent) -> str:
+        return source_opportunity_key_for_intent(
+            account_id="paper-account", operational_scope="paper-scope", intent=intent
+        ).source_key
+
+    assert key(original.intent) != key(changed_configuration)
+    assert key(original.intent) != key(exit_intent)
+    other_scope = replace(original.intent, operational_scope="other-scope")
+    assert (
+        key(original.intent)
+        != source_opportunity_key_for_intent(
+            account_id="paper-account", operational_scope="other-scope", intent=other_scope
+        ).source_key
+    )
 
 
 def test_paper_client_id_has_contract_vector_and_collision_fails_closed(

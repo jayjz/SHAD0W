@@ -38,3 +38,7 @@ repomix-output.xml
 paper-read-only.json
 paper-canary-result.json
 current-risk-decision.canonical.json
+
+# Local live-data evidence
+spy-seed-*.jsonl
+spy-warmstart-smoke-*.jsonl

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+import sys
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,16 +22,19 @@ from shadow.adapters.alpaca.stream import (
     decode_frame,
     run_live,
 )
+from shadow.application import live_shadow
 from shadow.application.evidence import (
     CaptureError,
     CaptureStatus,
     EvidenceWriter,
+    bootstrap_from_capture,
     line,
     load_capture,
     replay,
     verify_capture,
 )
 from shadow.application.shadow import (
+    BootstrapEvidence,
     FeedHealth,
     RiskObservabilityStatus,
     ShadowConfig,
@@ -37,6 +42,7 @@ from shadow.application.shadow import (
     ShadowSession,
 )
 from shadow.domain import Bar, Instrument, Quote
+from shadow.execution.opportunity import source_opportunity_key_for_intent
 from shadow.risk import OperationalQuantityConfig, OperatorControls, RiskPolicy, RiskState
 from shadow.strategies import MeanReversionConfig
 
@@ -98,6 +104,7 @@ def config(*, symbols: tuple[str, ...] = ("AAPL",), state: RiskState | None = No
     )
     return ShadowConfig(
         "shadow-test",
+        "shadow-test-scope",
         "test-revision",
         strategies,
         quantities,
@@ -260,11 +267,18 @@ def test_bars_are_healthy_without_quotes_but_candidate_is_not_risk_ready() -> No
     assert last.risk_observability.status is RiskObservabilityStatus.QUOTE_NOT_READY
 
 
-def test_stale_bar_and_disconnect_are_explicit() -> None:
+def test_stale_new_live_bar_cannot_drive_a_strategy_decision() -> None:
     shadow = session()
     shadow.accept(observation(bar(0, "100")), "bar")
-    tick = shadow.control("tick", at(7))
-    disconnected = shadow.control("disconnected", at(7, 1), "test")
+    stale = shadow.accept(
+        translate(bar(1, "90"), received_at=at(8), symbols=("AAPL",), feed="iex"), "stale-bar"
+    )
+    tick = shadow.control("tick", at(8))
+    disconnected = shadow.control("disconnected", at(8, 1), "test")
+    assert stale.disposition == "accepted"
+    assert stale.feature is not None
+    assert stale.signal is None
+    assert stale.intent is None
     assert tick.health is FeedHealth.STALE
     assert disconnected.health is FeedHealth.DISCONNECTED
 
@@ -308,8 +322,10 @@ def test_replay_and_future_append_preserve_existing_records() -> None:
     assert shadow.records[: len(captured)] == captured
 
 
-def _write_capture(path: Path, shadow: ShadowSession) -> None:
-    writer = EvidenceWriter(path, shadow.config)
+def _write_capture(
+    path: Path, shadow: ShadowSession, bootstrap: BootstrapEvidence | None = None
+) -> None:
+    writer = EvidenceWriter(path, shadow.config, bootstrap)
     try:
         for record in shadow.records:
             writer.write(record)
@@ -324,11 +340,325 @@ def _complete_capture(*, state: RiskState | None = None) -> ShadowSession:
     return shadow
 
 
+def _warm_config(
+    *, symbol: str = "AAPL", source_dataset_id: str = "alpaca:iex:aapl-1m-v1"
+) -> ShadowConfig:
+    base = config(symbols=(symbol,))
+    strategy = replace(
+        base.strategies[0],
+        configuration_id=f"{symbol}-mean-reversion-v1",
+        rolling_window=20,
+    )
+    return replace(
+        base,
+        session_id="warm-source",
+        strategies=(strategy,),
+        source_dataset_id=source_dataset_id,
+    )
+
+
+def _warm_source_capture(path: Path, source_config: ShadowConfig) -> ShadowSession:
+    source = ShadowSession(source_config)
+    source.control("connected", at(0))
+    closes = ("99", "100", "101") * 6 + ("100",)
+    assert len(closes) == 19
+    symbol = source_config.strategies[0].instrument.identifier
+    for index, close in enumerate(closes):
+        source.accept(observation(bar(index, close, symbol=symbol)))
+    source.control("stopped", at(20), "test_complete")
+    _write_capture(path, source)
+    return source
+
+
+def _bootstrapped_session(path: Path, target_config: ShadowConfig) -> ShadowSession:
+    seeded = ShadowSession(target_config)
+    bootstrap = bootstrap_from_capture(path, target_config, now=at(19, 2))
+    seeded.bootstrap(bootstrap, at(19, 2))
+    seeded.control("connected", at(19, 2))
+    return seeded
+
+
+def test_live_shadow_main_persists_bootstrap_before_connected_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_path = tmp_path / "source.jsonl"
+    target_path = tmp_path / "target.jsonl"
+    arguments = [
+        "--session-id",
+        "warm-target",
+        "--operational-scope",
+        "paper-primary",
+        "--code-revision",
+        "test-revision",
+        "--symbol",
+        "AAPL",
+        "--evidence-path",
+        str(target_path),
+        "--bootstrap-capture",
+        str(source_path),
+        "--local-feed-url",
+        "ws://127.0.0.1:8765",
+        "--source-dataset-id",
+        "alpaca:iex:aapl-1m-v1",
+        "--strategy-configuration-id",
+        "AAPL-mean-reversion-v1",
+        "--quantity-configuration-id",
+        "AAPL-quantity-v1",
+    ]
+    target_config = live_shadow._config(live_shadow._parser().parse_args(arguments))
+    source = ShadowSession(replace(target_config, session_id="warm-source"))
+    source.control("connected", at(0))
+    for index, close in enumerate(("99", "100", "101") * 6 + ("100", "99")):
+        source.accept(observation(bar(index, close)))
+    source.control("stopped", at(21), "test_complete")
+    _write_capture(source_path, source)
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            assert tz is UTC
+            return at(21, 1)
+
+    bootstrap_calls = 0
+    bootstrap_records: list[ShadowRecord] = []
+
+    class CountingSession(ShadowSession):
+        def bootstrap(self, evidence: BootstrapEvidence, now: datetime) -> ShadowRecord:
+            nonlocal bootstrap_calls
+            bootstrap_calls += 1
+            record = super().bootstrap(evidence, now)
+            bootstrap_records.append(record)
+            return record
+
+    expected_records: tuple[ShadowRecord, ...] = ()
+
+    async def run_once(
+        live_session: ShadowSession,
+        credentials: DataCredentials | None,
+        writer: EvidenceWriter,
+        *,
+        duration: float,
+        feed: str,
+        local_feed_url: str | None = None,
+    ) -> None:
+        nonlocal expected_records
+        assert credentials is None
+        assert duration == 60.0
+        assert feed == "iex"
+        assert local_feed_url == "ws://127.0.0.1:8765"
+        writer.write(live_session.control("connected", at(22), "local_relay"))
+        writer.write(live_session.control("stopped", at(23), "test_complete"))
+        expected_records = live_session.records
+
+    monkeypatch.setattr(live_shadow, "datetime", FrozenDateTime)
+    monkeypatch.setattr(live_shadow, "ShadowSession", CountingSession)
+    monkeypatch.setattr(live_shadow, "run_live", run_once)
+    monkeypatch.setattr(sys, "argv", ["live-shadow", *arguments])
+
+    assert live_shadow.main() == 0
+    assert bootstrap_calls == 1
+    assert len(bootstrap_records) == 1
+    lines = target_path.read_text(encoding="utf-8").splitlines()
+    persisted = [json.loads(value) for value in lines]
+    assert "bootstrap" in persisted[0]
+    assert lines[1] == line(bootstrap_records[0])
+    assert [(record["sequence"], record["action"]) for record in persisted[1:]] == [
+        (0, "bootstrap"),
+        (1, "connected"),
+        (2, "stopped"),
+    ]
+    capture = load_capture(target_path)
+    assert verify_capture(capture).records == expected_records
+
+
+def test_cold_start_capture_has_no_bootstrap_record_and_starts_at_zero(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.control("stopped", at(1), "test_complete")
+    path = tmp_path / "cold.jsonl"
+    _write_capture(path, shadow)
+
+    persisted = [json.loads(value) for value in path.read_text(encoding="utf-8").splitlines()]
+    assert "bootstrap" not in persisted[0]
+    assert [(record["sequence"], record["action"]) for record in persisted[1:]] == [
+        (0, "connected"),
+        (1, "stopped"),
+    ]
+
+
+def test_capture_with_first_persisted_sequence_one_fails(tmp_path: Path) -> None:
+    shadow = session()
+    shadow.control("stopped", at(1), "test_complete")
+    path = tmp_path / "sequence-gap.jsonl"
+    _write_capture(path, shadow)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    first_record = json.loads(lines[1])
+    first_record["sequence"] = 1
+    lines[1] = line(first_record)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureError, match="non-sequential record sequence"):
+        load_capture(path)
+
+
+def test_no_bootstrap_retains_twenty_bar_cold_start() -> None:
+    cold = ShadowSession(_warm_config())
+    cold.control("connected", at(0))
+    closes = ("99", "100", "101") * 6 + ("100", "90")
+    records = [cold.accept(observation(bar(index, close))) for index, close in enumerate(closes)]
+
+    states = [record.feature.state.value for record in records[:19] if record.feature is not None]
+    assert states == ["warming_up"] * 19
+    assert records[19].feature is not None
+    assert records[19].feature.state.value == "ready"
+
+
+def test_verified_nineteen_bar_bootstrap_makes_first_live_bar_ready(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.jsonl"
+    target = replace(_warm_config(), session_id="warm-target")
+    _warm_source_capture(source_path, target)
+
+    seeded = _bootstrapped_session(source_path, target)
+    live = seeded.accept(observation(bar(19, "90")), "live-19")
+
+    assert seeded.records[0].action == "bootstrap"
+    assert seeded.records[0].disposition == "history_seeded"
+    assert live.feature is not None and live.feature.state.value == "ready"
+    assert live.signal is not None
+    assert isinstance(live.observation, Bar)
+    assert live.signal.feature_observation_time == live.observation.observation_time
+
+
+def test_bootstrap_alone_cannot_create_candidate_or_intent(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.jsonl"
+    target = replace(_warm_config(), session_id="warm-target")
+    _warm_source_capture(source_path, target)
+
+    seeded = ShadowSession(target)
+    seeded.bootstrap(bootstrap_from_capture(source_path, target, now=at(19, 2)), at(19, 2))
+
+    assert len(seeded.records) == 1
+    assert seeded.records[0].feature is None
+    assert seeded.records[0].signal is None
+    assert seeded.records[0].intent is None
+
+
+def test_bootstrap_rejects_incompatible_dataset_and_incomplete_capture(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.jsonl"
+    source_config = _warm_config()
+    source = _warm_source_capture(source_path, source_config)
+    incompatible = replace(source_config, source_dataset_id="alpaca:iex:other-1m-v1")
+    with pytest.raises(CaptureError, match="lineage"):
+        bootstrap_from_capture(source_path, incompatible, now=at(19, 2))
+    with pytest.raises(CaptureError, match="operational scope"):
+        bootstrap_from_capture(
+            source_path,
+            replace(source_config, operational_scope="paper-secondary"),
+            now=at(19, 2),
+        )
+
+    incomplete_path = tmp_path / "incomplete.jsonl"
+    incomplete = ShadowSession(source_config)
+    incomplete.control("connected", at(0))
+    for index, close in enumerate(("99", "100", "101") * 6 + ("100",)):
+        incomplete.accept(observation(bar(index, close)))
+    _write_capture(incomplete_path, incomplete)
+    with pytest.raises(CaptureError, match="complete_stopped"):
+        bootstrap_from_capture(incomplete_path, source_config, now=at(19, 2))
+
+    assert source.health is FeedHealth.STOPPED
+
+
+def test_bootstrap_accepts_historical_context_but_rejects_future_evidence_and_another_symbol(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "future.jsonl"
+    source_config = _warm_config()
+    _warm_source_capture(source_path, source_config)
+    with pytest.raises(CaptureError, match="time boundary"):
+        bootstrap_from_capture(source_path, source_config, now=at(5))
+    historical = bootstrap_from_capture(source_path, source_config, now=at(30))
+    assert historical.newest_observation_time == at(19)
+    seeded = ShadowSession(source_config).bootstrap(historical, at(30))
+    assert seeded.disposition == "history_seeded"
+
+    other_path = tmp_path / "msft.jsonl"
+    other = _warm_config(symbol="MSFT")
+    _warm_source_capture(other_path, other)
+    with pytest.raises(CaptureError, match="strategy configuration"):
+        bootstrap_from_capture(other_path, source_config, now=at(19, 2))
+
+
+def test_bootstrap_overlap_duplicate_is_idempotent_but_conflict_fails_closed(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.jsonl"
+    target = _warm_config()
+    _warm_source_capture(source_path, target)
+    seeded = _bootstrapped_session(source_path, target)
+
+    exact_raw = bar(18, "100")
+    exact_raw["received"] = at(20)
+    duplicate = seeded.accept(observation(exact_raw), "redelivery")
+    assert duplicate.disposition == "duplicate"
+    assert duplicate.feature is None
+
+    conflicting_raw = bar(18, "90")
+    conflicting_raw["received"] = at(20, 1)
+    with pytest.raises(ValueError, match="conflicting live bar overlaps bootstrap"):
+        seeded.accept(observation(conflicting_raw), "conflict")
+    assert seeded.health is FeedHealth.FAILED
+
+
+def test_bootstrap_evidence_replays_and_future_live_records_do_not_rewrite_it(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.jsonl"
+    target_path = tmp_path / "target.jsonl"
+    target = replace(_warm_config(), session_id="warm-target")
+    _warm_source_capture(source_path, target)
+    bootstrap = bootstrap_from_capture(source_path, target, now=at(19, 2))
+    seeded = ShadowSession(target)
+    seeded.bootstrap(bootstrap, at(19, 2))
+    seeded.control("connected", at(19, 2))
+    first_live = seeded.accept(observation(bar(19, "90")), "live-19")
+    prefix = seeded.records
+    seeded.accept(observation(bar(20, "91")), "live-20")
+    seeded.control("stopped", at(22), "test_complete")
+    _write_capture(target_path, seeded, bootstrap)
+
+    capture = load_capture(target_path)
+    assert capture.bootstrap == bootstrap
+    assert verify_capture(capture).records == seeded.records
+    assert seeded.records[: len(prefix)] == prefix
+    assert first_live.feature is not None
+    assert first_live.feature.observation_time == at(20)
+
+
+def test_bootstrap_path_does_not_change_causal_strategy_identity(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.jsonl"
+    copied_path = tmp_path / "renamed-source.jsonl"
+    target = _warm_config()
+    _warm_source_capture(source_path, target)
+    copied_path.write_bytes(source_path.read_bytes())
+    first = bootstrap_from_capture(source_path, target, now=at(19, 2))
+    second = bootstrap_from_capture(copied_path, target, now=at(19, 2))
+    assert first.capture_digest == second.capture_digest
+
+    left = ShadowSession(target)
+    right = ShadowSession(target)
+    left.bootstrap(first, at(19, 2))
+    right.bootstrap(second, at(19, 2))
+    left.control("connected", at(19, 2))
+    right.control("connected", at(19, 2))
+    live = observation(bar(19, "90"))
+    assert left.accept(live, "live") == right.accept(live, "live")
+
+
 def test_disk_capture_round_trip_recomputes_derived_evidence_and_is_terminal(
     tmp_path: Path,
 ) -> None:
     state = RiskState(
-        "shadow-test",
+        "shadow-test-scope",
         "supplied-offline-state",
         1,
         True,
@@ -346,6 +676,7 @@ def test_disk_capture_round_trip_recomputes_derived_evidence_and_is_terminal(
     replayed = verify_capture(capture)
 
     assert capture.status is CaptureStatus.COMPLETE_STOPPED
+    assert capture.config.operational_scope == "shadow-test-scope"
     assert replayed.records == shadow.records
     assert replayed.records[-2].feature is not None
     assert replayed.records[-2].signal is not None
@@ -420,6 +751,10 @@ def test_malformed_complete_interior_line_is_invalid(tmp_path: Path) -> None:
         (lambda item: item.__setitem__("config", {}), "invalid capture config shape"),
         (
             lambda item: item["config"].pop("maximum_bar_age"),
+            "invalid capture config shape",
+        ),
+        (
+            lambda item: item["config"].pop("operational_scope"),
             "invalid capture config shape",
         ),
         (
@@ -846,7 +1181,7 @@ def test_stream_uses_session_scope_for_auth_subscription_and_translation(tmp_pat
 
 def test_optional_pure_risk_evaluation_never_creates_admission_artifact() -> None:
     state = RiskState(
-        "shadow-test",
+        "shadow-test-scope",
         "supplied-offline-state",
         1,
         True,
@@ -863,6 +1198,40 @@ def test_optional_pure_risk_evaluation_never_creates_admission_artifact() -> Non
     assert observability.status is RiskObservabilityStatus.EVALUATED
     assert observability.decision is not None
     assert all(record.__class__.__name__ == "ShadowRecord" for record in shadow.records)
+
+
+def test_session_id_is_evidence_only_and_scope_is_causal_identity() -> None:
+    base = replace(
+        config(),
+        session_id="capture-one",
+        operational_scope="paper-primary",
+        source_dataset_id="alpaca:iex:aapl-1m-v1",
+    )
+
+    def candidate(candidate_config: ShadowConfig) -> ShadowRecord:
+        shadow = ShadowSession(candidate_config)
+        shadow.control("connected", at(0))
+        return _two_bars_then_quote_then_final_bar(shadow)[-1]
+
+    first = candidate(base)
+    restart = candidate(replace(base, session_id="capture-two"))
+    other_scope = candidate(replace(base, operational_scope="paper-secondary"))
+    assert first.intent is not None
+    assert restart.intent is not None
+    assert other_scope.intent is not None
+    assert first.intent.intent_identity == restart.intent.intent_identity
+    assert first.intent.intent_identity != other_scope.intent.intent_identity
+    first_key = source_opportunity_key_for_intent(
+        account_id="paper-account", operational_scope="paper-primary", intent=first.intent
+    )
+    restart_key = source_opportunity_key_for_intent(
+        account_id="paper-account", operational_scope="paper-primary", intent=restart.intent
+    )
+    other_scope_key = source_opportunity_key_for_intent(
+        account_id="paper-account", operational_scope="paper-secondary", intent=other_scope.intent
+    )
+    assert first_key.source_key == restart_key.source_key
+    assert first_key.source_key != other_scope_key.source_key
 
 
 def test_missing_credentials_and_no_gate_or_trading_imports() -> None:

@@ -184,7 +184,7 @@ def _preparer(broker: ReadOnlyBroker, *, now: datetime = NOW) -> PaperRiskPrepar
     )
 
 
-def test_valid_candidate_produces_round_trippable_canonical_risk_decision_without_submit() -> None:
+def test_preparation_accepts_unique_capture_session_with_stable_scope_without_submit() -> None:
     broker = ReadOnlyBroker()
     result = _preparer(broker).prepare(_candidate())
     assert result.authorized
@@ -193,6 +193,17 @@ def test_valid_candidate_produces_round_trippable_canonical_risk_decision_withou
     assert decode_canonical(result.authorization or b"") == result.decision
     assert canonical_bytes(result.decision) == result.authorization
     assert broker.submit_calls == 0
+
+
+def test_preparation_rejects_candidate_from_another_operational_scope() -> None:
+    candidate = _candidate()
+    assert candidate.intent is not None
+    result = _preparer(ReadOnlyBroker()).prepare(
+        replace(candidate, intent=replace(candidate.intent, operational_scope="other-scope"))
+    )
+    assert not result.authorized
+    assert result.decision is None
+    assert result.reason == "candidate does not match the explicit PAPER preparation binding"
 
 
 def test_source_opportunity_identity_is_deterministic_and_changed_candidate_cannot_reuse_it() -> (

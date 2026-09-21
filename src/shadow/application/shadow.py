@@ -40,6 +40,40 @@ class RiskObservabilityStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class BootstrapEvidence:
+    """Verified prior completed bars used only to initialize a feature window.
+
+    ``capture_digest`` identifies the exact source artifact without retaining its
+    machine-local path.  The bars remain explicit so a derived capture can be
+    replayed without treating the source artifact as an ambient dependency.
+    """
+
+    capture_digest: str
+    bars: tuple[Bar, ...]
+    accepted_bar_count: int
+    newest_observation_time: datetime
+    newest_availability_time: datetime
+
+    def __post_init__(self) -> None:
+        if len(self.capture_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.capture_digest
+        ):
+            raise ValueError("bootstrap capture digest must be a lowercase SHA-256 digest")
+        if not self.bars or not all(isinstance(bar, Bar) for bar in self.bars):
+            raise ValueError("bootstrap requires completed bars")
+        if self.accepted_bar_count != len(self.bars):
+            raise ValueError("bootstrap accepted bar count differs from bars")
+        observation_time = canonical_time(self.newest_observation_time)
+        availability_time = canonical_time(self.newest_availability_time)
+        object.__setattr__(self, "newest_observation_time", observation_time)
+        object.__setattr__(self, "newest_availability_time", availability_time)
+        if observation_time != max(bar.observation_time for bar in self.bars):
+            raise ValueError("bootstrap newest observation time differs from bars")
+        if availability_time != max(bar.availability_time for bar in self.bars):
+            raise ValueError("bootstrap newest availability time differs from bars")
+
+
+@dataclass(frozen=True, slots=True)
 class RiskObservability:
     status: RiskObservabilityStatus
     quote: Quote | None
@@ -50,6 +84,7 @@ class RiskObservability:
 @dataclass(frozen=True, slots=True)
 class ShadowConfig:
     session_id: str
+    operational_scope: str
     code_revision: str
     strategies: tuple[MeanReversionConfig, ...]
     quantities: tuple[OperationalQuantityConfig, ...]
@@ -63,8 +98,13 @@ class ShadowConfig:
 
     def __post_init__(self) -> None:
         instruments = tuple(config.instrument for config in self.strategies)
-        if not self.session_id.strip() or not self.code_revision.strip() or not self.source.strip():
-            raise ValueError("session, code revision and source identities required")
+        if (
+            not self.session_id.strip()
+            or not self.operational_scope.strip()
+            or not self.code_revision.strip()
+            or not self.source.strip()
+        ):
+            raise ValueError("session, scope, code revision and source identities required")
         if not instruments or len(set(instruments)) != len(instruments):
             raise ValueError("unique explicit strategy instruments required")
         if set(item.instrument for item in self.quantities) != set(instruments):
@@ -82,9 +122,9 @@ class ShadowConfig:
             raise ValueError("source dataset identity must be a nonempty trimmed string")
         if (
             self.observability_state is not None
-            and self.observability_state.operational_scope != self.session_id
+            and self.observability_state.operational_scope != self.operational_scope
         ):
-            raise ValueError("observability state scope must match the shadow session")
+            raise ValueError("observability state scope must match the shadow operational scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +171,7 @@ class ShadowSession:
         self._seen: dict[
             tuple[type[Bar] | type[Quote], Instrument, datetime], tuple[Bar | Quote, str]
         ] = {}
+        self._bootstrap_bar_identities: set[tuple[type[Bar], Instrument, datetime]] = set()
 
     @property
     def records(self) -> tuple[ShadowRecord, ...]:
@@ -139,6 +180,66 @@ class ShadowSession:
     @property
     def health(self) -> FeedHealth:
         return self._health
+
+    def bootstrap(self, evidence: BootstrapEvidence, now: datetime) -> ShadowRecord:
+        """Seed verified history without replaying it through the live session clock.
+
+        Seed bars are deliberately not observations in this session: they create
+        no records with old availability times, no features, and no strategy
+        evaluation.  The first live accepted completed bar remains the sole
+        causal trigger for a candidate after startup.
+        """
+        current = canonical_time(now)
+        if not isinstance(evidence, BootstrapEvidence):
+            raise ValueError("bootstrap evidence is required")
+        if self._records or self._now is not None or self._connected:
+            raise ValueError("bootstrap must precede live session activity")
+        if len(self._records) >= self.config.maximum_records:
+            self._health = FeedHealth.FAILED
+            raise ValueError("bounded session evidence limit reached")
+        if self.config.source_dataset_id is None:
+            raise ValueError("bootstrap requires a stable source dataset identity")
+
+        bars_by_instrument: dict[Instrument, list[Bar]] = {
+            instrument: [] for instrument in self._strategy
+        }
+        latest_availability: dict[Instrument, datetime] = {}
+        for bar in evidence.bars:
+            if (
+                bar.instrument not in bars_by_instrument
+                or bar.provenance.source != self.config.source
+                or bar.availability_semantics is not AvailabilitySemantics.SYSTEM_RECEIVED
+                or bar.interval.duration != timedelta(minutes=1)
+                or bar.observation_time > current
+                or bar.availability_time > current
+            ):
+                self._health = FeedHealth.FAILED
+                raise ValueError("bootstrap bar violates session scope or time boundary")
+            history = bars_by_instrument[bar.instrument]
+            if history and bar.observation_time <= history[-1].observation_time:
+                self._health = FeedHealth.FAILED
+                raise ValueError("bootstrap bars are duplicate or out of order")
+            previous_availability = latest_availability.get(bar.instrument)
+            if previous_availability is not None and bar.availability_time < previous_availability:
+                self._health = FeedHealth.FAILED
+                raise ValueError("bootstrap bars have out-of-order availability")
+            history.append(bar)
+            latest_availability[bar.instrument] = bar.availability_time
+
+        for instrument, strategy in self._strategy.items():
+            history = bars_by_instrument[instrument]
+            if len(history) != strategy.rolling_window - 1:
+                self._health = FeedHealth.FAILED
+                raise ValueError("bootstrap bar count does not seed the configured feature window")
+
+        for instrument, history in bars_by_instrument.items():
+            self._bars[instrument] = history
+            for bar in history:
+                identity = (Bar, instrument, bar.observation_time)
+                self._seen[identity] = (bar, "")
+                self._bootstrap_bar_identities.add(identity)
+            self._latest[(Bar, instrument)] = history[-1]
+        return self._record(now=current, action="bootstrap", disposition="history_seeded")
 
     def _advance(self, now: datetime) -> datetime:
         current = canonical_time(now)
@@ -297,9 +398,17 @@ class ShadowSession:
         if not self._connected:
             disposition = "disconnected"
         elif prior is not None:
-            same_value = self._same_logical_observation(observation, prior[0])
-            same_delivery = not delivery_reference or not prior[1] or delivery_reference == prior[1]
-            disposition = "duplicate" if same_value and same_delivery else "same_time_variant"
+            if isinstance(observation, Bar) and identity in self._bootstrap_bar_identities:
+                if not self._same_logical_observation(observation, prior[0]):
+                    self._health = FeedHealth.FAILED
+                    raise ValueError("conflicting live bar overlaps bootstrap history")
+                disposition = "duplicate"
+            else:
+                same_value = self._same_logical_observation(observation, prior[0])
+                same_delivery = (
+                    not delivery_reference or not prior[1] or delivery_reference == prior[1]
+                )
+                disposition = "duplicate" if same_value and same_delivery else "same_time_variant"
         elif (
             latest := self._latest.get(key)
         ) is not None and observation.observation_time < latest.observation_time:
@@ -321,7 +430,7 @@ class ShadowSession:
                 del history[: -strategy.rolling_window]
                 metadata = DatasetMetadata(
                     self.config.source,
-                    self.config.source_dataset_id or self.config.session_id,
+                    self.config.source_dataset_id or self.config.source,
                     (observation.instrument,),
                     history[0].observation_time,
                     observation.observation_time,
@@ -334,7 +443,7 @@ class ShadowSession:
                     )
                     if signal is not None:
                         intent = OrderIntent.from_signal(
-                            operational_scope=self.config.session_id,
+                            operational_scope=self.config.operational_scope,
                             signal=signal,
                             quantity_config=self._quantity[observation.instrument],
                         )

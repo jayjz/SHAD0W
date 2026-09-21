@@ -1,6 +1,7 @@
 # ADR 0005: Durable paper execution with broker-authoritative recovery
 
-- **Status:** accepted design for P5A; P5A.0 implements documentation and CI only.
+- **Status:** accepted P5A design record. This ADR preserves its P5A.0 decision-time
+  context; current implementation coverage is in [STATUS.md](../STATUS.md).
 - **Context:** P2A grants prove admission once in one process. They do not expire,
   revalidate controls, survive restart, or release reservations. P4A observes flat
   entry candidates without broker inventory. Neither can safely dispatch orders.
@@ -36,7 +37,9 @@ uncertainty. All new submissions halt while reconciliation runs. The canary neve
 automatically resubmits an attempted intent, even after a not-found lookup.
 
 Stable source keys bind account/scope, causal feed lineage, completed-bar identity,
-strategy identity, and feature identity before delivery metadata can vary. The
+strategy ID/version, strategy configuration ID, signal direction, and feature
+identity before delivery metadata can vary. `session_id` is capture evidence only;
+it cannot name account authority, scope, an intent, or a source opportunity. The
 first feature/signal/intent binding is immutable. A durable absence of a dispatch
 marker is distinct from a committed potentially-submitted attempt; the latter is
 permanently spent. Missing order history or execution history proves neither
@@ -60,5 +63,6 @@ after transport failure risks duplicate exposure; a generic live/paper client
 would broaden the authorized surface. Conservative halts sacrifice liveness and
 may leave paper exposure open until authoritative recovery or operator action.
 
-Implementation is split into [P5A.1–P5A.8](../P5A_EXECUTION_PLAN.md). This ADR adds
-no adapter, persistence code, account connection, order path, or strategy evidence.
+Implementation is split into [P5A.1–P5A.8](../P5A_EXECUTION_PLAN.md). At adoption,
+this ADR added no adapter, persistence code, account connection, order path, or
+strategy evidence.

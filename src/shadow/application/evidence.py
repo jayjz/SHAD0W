@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TextIO
 
-from shadow.application.shadow import ShadowConfig, ShadowRecord, ShadowSession
+from shadow.application.shadow import BootstrapEvidence, ShadowConfig, ShadowRecord, ShadowSession
 from shadow.domain import AvailabilitySemantics, Bar, BarInterval, Instrument, Provenance, Quote
 from shadow.features import FeatureInput, FeatureName
 from shadow.risk import (
@@ -59,6 +60,7 @@ class ShadowCapture:
     inputs: tuple[_ReplayInput, ...]
     status: CaptureStatus
     diagnostic: str | None = None
+    bootstrap: BootstrapEvidence | None = None
 
 
 def encode(value: object) -> object:
@@ -88,9 +90,14 @@ def line(value: object) -> str:
 class EvidenceWriter:
     """Exclusive creation prevents accidental overwrite or mixing sessions."""
 
-    def __init__(self, path: Path, config: ShadowConfig) -> None:
+    def __init__(
+        self, path: Path, config: ShadowConfig, bootstrap: BootstrapEvidence | None = None
+    ) -> None:
         self._file: TextIO = path.open("x", encoding="utf-8")
-        self.write({"schema": EVIDENCE_SCHEMA, "config": config})
+        header: dict[str, object] = {"schema": EVIDENCE_SCHEMA, "config": config}
+        if bootstrap is not None:
+            header["bootstrap"] = bootstrap
+        self.write(header)
 
     def write(self, value: object) -> None:
         self._file.write(line(value) + "\n")
@@ -100,11 +107,19 @@ class EvidenceWriter:
         self._file.close()
 
 
-def replay(config: ShadowConfig, captured: Iterable[ShadowRecord]) -> tuple[ShadowRecord, ...]:
+def replay(
+    config: ShadowConfig,
+    captured: Iterable[ShadowRecord],
+    bootstrap: BootstrapEvidence | None = None,
+) -> tuple[ShadowRecord, ...]:
     """Replay immutable normalized inputs and controls without importing an adapter."""
     session = ShadowSession(config)
     for record in captured:
-        if record.observation is not None:
+        if record.action == "bootstrap":
+            if bootstrap is None:
+                raise ValueError("bootstrap record requires bootstrap evidence")
+            session.bootstrap(bootstrap, record.time)
+        elif record.observation is not None:
             session.accept(record.observation, record.delivery_reference)
         elif record.action == "observation":
             if not record.disposition.startswith("invalid:"):
@@ -437,6 +452,7 @@ def _outstanding_order(value: object) -> OutstandingOrder:
 def _config(value: object) -> ShadowConfig:
     required = {
         "session_id",
+        "operational_scope",
         "code_revision",
         "strategies",
         "quantities",
@@ -460,6 +476,7 @@ def _config(value: object) -> ShadowConfig:
     try:
         return ShadowConfig(
             _text(item["session_id"], "capture session id"),
+            _text(item["operational_scope"], "capture operational scope"),
             _text(item["code_revision"], "capture code revision"),
             tuple(_strategy(entry) for entry in strategies),
             tuple(_quantity(entry) for entry in quantities),
@@ -475,6 +492,39 @@ def _config(value: object) -> ShadowConfig:
         )
     except ValueError as error:
         raise CaptureError("invalid capture config") from error
+
+
+def _bootstrap(value: object) -> BootstrapEvidence:
+    item = _mapping(
+        value,
+        "bootstrap",
+        {
+            "capture_digest",
+            "bars",
+            "accepted_bar_count",
+            "newest_observation_time",
+            "newest_availability_time",
+        },
+    )
+    bars_value = item["bars"]
+    if not isinstance(bars_value, list):
+        raise CaptureError("invalid bootstrap bars")
+    bars: list[Bar] = []
+    for value in bars_value:
+        observation = _observation(value)
+        if not isinstance(observation, Bar):
+            raise CaptureError("bootstrap cannot contain quotes")
+        bars.append(observation)
+    try:
+        return BootstrapEvidence(
+            _text(item["capture_digest"], "bootstrap capture digest"),
+            tuple(bars),
+            _integer(item["accepted_bar_count"], "bootstrap accepted bar count"),
+            _time(item["newest_observation_time"], "bootstrap newest observation time"),
+            _time(item["newest_availability_time"], "bootstrap newest availability time"),
+        )
+    except ValueError as error:
+        raise CaptureError("invalid bootstrap") from error
 
 
 def _input(value: object, config: ShadowConfig, sequence: int) -> _ReplayInput:
@@ -517,7 +567,7 @@ def _input(value: object, config: ShadowConfig, sequence: int) -> _ReplayInput:
             observation = None
         else:
             observation = _observation(observation_value)
-    elif action in ("connected", "disconnected", "failed", "stopped", "tick"):
+    elif action in ("bootstrap", "connected", "disconnected", "failed", "stopped", "tick"):
         if observation_value is not None:
             raise CaptureError("control record cannot contain an observation")
         observation = None
@@ -533,16 +583,12 @@ def _input(value: object, config: ShadowConfig, sequence: int) -> _ReplayInput:
     )
 
 
-def load_capture(path: Path) -> ShadowCapture:
+def _load_capture_content(content: str) -> ShadowCapture:
     """Parse one local ``shadow.live.v1`` capture without trusting derived evidence.
 
     A final incomplete JSON line is recoverable evidence interruption. Any malformed
     complete line is corruption and fails closed.
     """
-    try:
-        content = path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise CaptureError("unable to read capture") from error
     physical_lines = content.splitlines(keepends=True)
     if not physical_lines:
         raise CaptureError("capture is empty")
@@ -552,10 +598,16 @@ def load_capture(path: Path) -> ShadowCapture:
         header: object = json.loads(physical_lines[0])
     except json.JSONDecodeError as error:
         raise CaptureError("malformed capture header") from error
-    header_map = _mapping(header, "capture header", {"schema", "config"})
+    if not isinstance(header, dict) or set(header) not in (
+        {"schema", "config"},
+        {"schema", "config", "bootstrap"},
+    ):
+        raise CaptureError("invalid capture header shape")
+    header_map = header
     if header_map["schema"] != EVIDENCE_SCHEMA:
         raise CaptureError("unsupported capture schema")
     config = _config(header_map["config"])
+    bootstrap = None if "bootstrap" not in header_map else _bootstrap(header_map["bootstrap"])
     inputs: list[_ReplayInput] = []
     diagnostic = None
     for index, raw_line in enumerate(physical_lines[1:], start=1):
@@ -579,7 +631,32 @@ def load_capture(path: Path) -> ShadowCapture:
         status = CaptureStatus.INCOMPLETE
         if diagnostic is None:
             diagnostic = "capture ended without terminal evidence"
-    return ShadowCapture(config, tuple(inputs), status, diagnostic)
+    if bootstrap is not None:
+        if not inputs or inputs[0].action != "bootstrap":
+            raise CaptureError("bootstrap capture lacks transition record")
+        if any(input_record.action == "bootstrap" for input_record in inputs[1:]):
+            raise CaptureError("bootstrap transition must be first")
+    elif any(input_record.action == "bootstrap" for input_record in inputs):
+        raise CaptureError("bootstrap record lacks bootstrap evidence")
+    return ShadowCapture(config, tuple(inputs), status, diagnostic, bootstrap)
+
+
+def load_capture(path: Path) -> ShadowCapture:
+    """Load a persisted capture without trusting its derived evidence."""
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CaptureError("unable to read capture") from error
+    return _load_capture_content(content)
+
+
+def _load_capture_with_digest(path: Path) -> tuple[ShadowCapture, str]:
+    try:
+        raw = path.read_bytes()
+        content = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise CaptureError("unable to read capture") from error
+    return _load_capture_content(content), hashlib.sha256(raw).hexdigest()
 
 
 def verify_capture(capture: ShadowCapture) -> ShadowSession:
@@ -589,7 +666,10 @@ def verify_capture(capture: ShadowCapture) -> ShadowSession:
     session = ShadowSession(capture.config)
     for input_record in capture.inputs:
         try:
-            if input_record.observation is not None:
+            if input_record.action == "bootstrap":
+                assert capture.bootstrap is not None
+                actual = session.bootstrap(capture.bootstrap, input_record.time)
+            elif input_record.observation is not None:
                 actual = session.accept(input_record.observation, input_record.delivery_reference)
             elif input_record.action == "observation":
                 actual = session.invalid(
@@ -610,3 +690,56 @@ def verify_capture(capture: ShadowCapture) -> ShadowSession:
     if capture.status is CaptureStatus.COMPLETE_FAILED and session.health.value != "failed":
         raise CaptureError("failed capture did not replay terminally")
     return session
+
+
+def bootstrap_from_capture(path: Path, config: ShadowConfig, *, now: datetime) -> BootstrapEvidence:
+    """Extract the exact prior window from a strictly verified stopped capture."""
+    capture, capture_digest = _load_capture_with_digest(path)
+    if capture.status is not CaptureStatus.COMPLETE_STOPPED:
+        raise CaptureError("bootstrap capture must be complete_stopped")
+    verify_capture(capture)
+    if config.source_dataset_id is None or capture.config.source_dataset_id is None:
+        raise CaptureError("bootstrap requires stable source dataset identities")
+    if (
+        capture.config.source != config.source
+        or capture.config.source_dataset_id != config.source_dataset_id
+        or capture.config.operational_scope != config.operational_scope
+    ):
+        raise CaptureError(
+            "bootstrap source dataset lineage or operational scope differs from session"
+        )
+    source_strategies = {strategy.instrument: strategy for strategy in capture.config.strategies}
+    target_strategies = {strategy.instrument: strategy for strategy in config.strategies}
+    if source_strategies != target_strategies:
+        raise CaptureError("bootstrap strategy configuration differs from session")
+
+    accepted_bars: dict[Instrument, list[Bar]] = {
+        instrument: [] for instrument in target_strategies
+    }
+    if capture.bootstrap is not None:
+        for bar in capture.bootstrap.bars:
+            accepted_bars[bar.instrument].append(bar)
+    for record in capture.inputs:
+        if record.disposition == "accepted" and isinstance(record.observation, Bar):
+            accepted_bars[record.observation.instrument].append(record.observation)
+
+    selected: list[Bar] = []
+    for instrument, strategy in target_strategies.items():
+        history = accepted_bars[instrument]
+        required = strategy.rolling_window - 1
+        if len(history) < required:
+            raise CaptureError("bootstrap capture has fewer usable bars than required")
+        selected.extend(history[-required:])
+    selected.sort(key=lambda bar: (bar.observation_time, bar.instrument.identifier))
+    try:
+        result = BootstrapEvidence(
+            capture_digest,
+            tuple(selected),
+            len(selected),
+            max(bar.observation_time for bar in selected),
+            max(bar.availability_time for bar in selected),
+        )
+        ShadowSession(config).bootstrap(result, now)
+    except ValueError as error:
+        raise CaptureError(f"invalid bootstrap evidence: {error}") from error
+    return result

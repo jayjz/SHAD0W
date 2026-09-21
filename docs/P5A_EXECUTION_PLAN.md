@@ -1,11 +1,13 @@
 # P5A execution plan
 
-P5A.0 delivers the [execution contract](P5A_EXECUTION_CONTRACT.md),
-[ADR 0005](decisions/0005-paper-execution-recovery.md), reconciled milestone
-documentation, and credential-free Python 3.12 CI. Broker execution is unimplemented.
-The following are local follow-up tickets, not published GitHub issues or permission
-to run a canary. Each implementation assignment must explicitly select its slice;
-network activation is reserved for P5A.8 after operator approval.
+This is the detailed dependency and acceptance plan, not the current-status source;
+see [STATUS.md](STATUS.md). P5A.0 originally delivered the contract, ADR, and CI.
+HEAD now also contains implemented P5A.1/P5A.2 foundations and partial components
+of later work: a PAPER adapter plus a guarded early one-shot integration probe.
+Those components do not satisfy the original P5A.3–P5A.8 acceptance sequence.
+The following tickets remain the dependency target; each implementation assignment
+must explicitly select its slice. The later final P5A.8 acceptance run remains
+reserved for completion of P5A.3–P5A.7 and operator approval.
 
 ## Dependency order
 
@@ -19,6 +21,12 @@ network activation is reserved for P5A.8 after operator approval.
 | P5A.6 | P5A.3, P5A.4, P5A.5 | Separate paper application and lifecycle-backed signals |
 | P5A.7 | P5A.6 | Crash/recovery acceptance suite and operator runbook |
 | P5A.8 | P5A.7, operator approval | Bounded supervised paper canary and evidence review |
+
+Current phase interpretation: P5A.1 and P5A.2 foundations are implemented; P5A.3
+is designed only; P5A.4/P5A.5 have limited components supporting the early probe
+but are not phase-complete; P5A.6/P5A.7/P5A.8 are not implemented. The existing
+`shadow-paper-canary` is an early bounded supervised one-shot PAPER integration
+probe, not final P5A.8 acceptance.
 
 All tickets retain existing P2A/P4A behavior, update their relevant contracts, and
 run the canonical checks. Synthetic tests require no credentials or external
@@ -64,8 +72,9 @@ P5A.2B now adds only durable immutable source-binding and first-decision
 projections: exact reconnect delivery replays the first binding/decision, a
 material variant fails closed, and append-only events must reproduce projections
 on reopen. It creates no reservation, capability, reconciliation, or dispatch
-authority. Existing v2 journals are intentionally rejected rather than silently
-migrated: an explicit, reviewed migration policy is still required. A locally
+authority. `shadow.source-opportunity.v2` distinguishes strategy configuration
+and signal direction; existing v3 journals are intentionally rejected rather than
+silently migrated: an explicit, reviewed migration policy is still required. A locally
 intact journal cannot prove a whole-storage rollback; missing historical execution
 evidence remains unresolved until P5A.3.
 

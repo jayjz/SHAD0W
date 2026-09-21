@@ -27,7 +27,7 @@ from shadow.features import FeatureSnapshot
 from shadow.risk.models import OrderIntent, OrderTarget, RiskDecision
 from shadow.strategies import Signal
 
-JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v3"
+JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v4"
 T = TypeVar("T")
 
 
@@ -570,7 +570,7 @@ class ExecutionJournal:
     def _binding_key_evidence(binding: SourceOpportunityBinding) -> tuple[object, ...]:
         key = binding.key
         return (
-            "shadow.source-opportunity-key.v1",
+            "shadow.source-opportunity-key.v2",
             key.account_id,
             key.operational_scope,
             key.feed_lineage,
@@ -578,6 +578,8 @@ class ExecutionJournal:
             key.completed_bar_observation_time,
             key.strategy_id,
             key.strategy_version,
+            key.strategy_configuration_id,
+            key.signal_type,
             key.feature_name,
             key.feature_input,
             key.feature_implementation_version,
@@ -645,7 +647,11 @@ class ExecutionJournal:
             return None
         try:
             key_parts = decode_canonical(row[1])
-            if not isinstance(key_parts, tuple) or len(key_parts) != 12:
+            if (
+                not isinstance(key_parts, tuple)
+                or len(key_parts) != 14
+                or key_parts[0] != "shadow.source-opportunity-key.v2"
+            ):
                 raise JournalError("source key evidence is malformed")
             from shadow.execution.opportunity import SourceOpportunityKey
 

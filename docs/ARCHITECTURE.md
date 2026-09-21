@@ -108,29 +108,22 @@ The adapter translates JSON immediately: Alpaca minute-bar timestamps are left e
 
 `ShadowSession` is a bounded append-only application composition, not the historical simulator. Bars are accepted in receive order per symbol and compute the existing deterministic z-score/signal pipeline once. Exact redelivery is retained as duplicate evidence without another decision; material same-time variants and older observations are retained but excluded from forward state. Per-symbol bar freshness determines strategy readiness; absence or staleness of a quote does not invalidate bar accumulation. A quote is required only when a candidate is observed for risk evidence. A session is `starting`, `healthy`, `stale`, `disconnected`, `failed`, or `stopped`; no stale or disconnected state can imply current operational actionability.
 
+For bounded cold-start reduction, the optional `--bootstrap-capture` composes an already verified stopped P4A capture into `ShadowSession` through a dedicated seed boundary. It validates source/configuration/scope lineage and retains the trailing valid completed one-minute bars needed to form the next feature window. This is historical rolling context, not current market evidence: seed age does not use `maximum_bar_age`, and the feature kernel has no contiguous wall-clock-window rule. It neither replays those bars through the new session clock nor evaluates strategy/risk on them. The seed is explicit, digest-identified, and replayable in the new capture; the first fresh new live bar remains causally responsible for any resulting ready feature or candidate. Bootstrap quotes, broker state, admission, and dispatch are intentionally outside this boundary.
+
 A candidate may create an `OrderIntent` as an observational proposal, never an order. The live session evaluates the current strategy with `PositionState.FLAT` only: this is live flat-state candidate observation, so it can observe entry candidates but cannot infer a broker holding or create lifecycle-backed exits. With no broker/account adapter, the normal live command records `operational_state_unavailable` rather than asserting a flat/reconciled account or emitting a risk decision. Tests/offline replay may supply explicitly labelled non-authoritative state and use only the pure `evaluate_risk` function; P4A never imports or calls the admission gate, never creates an authorization capability, and never dispatches. `shadow.live.v1` JSONL recovers normalized inputs separately from derived-output verification: complete terminal captures are deterministically recomputed against persisted records, valid interrupted prefixes remain explicitly incomplete, and corrupt interior evidence fails closed.
 
-## P5A.0 paper execution design and CI
+## Implemented bounded P5A integration components
 
-P5A paper execution is explicitly authorized as an engineering direction; P5A.0
-implements only its contracts, follow-up plan, and Python 3.12 CI. No broker port,
-trading adapter, journal implementation, or paper command exists yet. Live-capital
-support remains prohibited. See [ADR 0005](decisions/0005-paper-execution-recovery.md)
-and the [execution contract](P5A_EXECUTION_CONTRACT.md).
+Current HEAD includes provider-neutral broker contracts and fake evidence, a
+PAPER-only Alpaca adapter, durable SQLite journal/ownership, source-opportunity
+binding, deterministic client IDs, read-only PAPER preparation, and a guarded
+human-armed one-shot PAPER dispatch probe. The probe commits its attempt before
+one submit call, preserves uncertainty, and never automatically resubmits.
 
-The planned separate paper application composes provider-neutral broker evidence,
-a durable independent risk authority, a local SQLite execution journal, guarded
-dispatch, and broker-authoritative reconciliation. Signals propose; risk authorizes;
-execution obeys; reconciliation establishes operational truth. P2A's existing gate
-and P4A's observational command retain their bounded behavior. P5A must introduce
-versioned durable admission and reservation transitions, not recreate P2A tokens
-or infer holdings from simulated fills.
-
-One process owns a dedicated paper account/scope. Intent identity, first decisions,
-reservations and attempts commit before dispatch; deterministic client IDs locate
-broker evidence. Uncertain submission freezes new submissions until reconciliation,
-with no automatic POST retry. Fresh submission-time checks reduce but cannot remove
-the race with external state changes. Paper origins are fixed and there is no live
-adapter or generic live-mode switch. Reconciled broker lifecycle supplies flat or
-holding context for live signals and exits. The [execution plan](P5A_EXECUTION_PLAN.md)
-defines implementation and activation gates for the one-symbol/one-share canary.
+These components do not establish P5A.3 reconciliation or lifecycle authority.
+The probe's limited order lookup/snapshot checks cannot establish broker-authoritative
+holdings, release capacity, recover uncertain exposure, or provide continuous entry/
+exit operation. P4A therefore remains FLAT observational candidate generation.
+Live-capital support remains prohibited. See [STATUS.md](STATUS.md) for current
+coverage and [the execution plan](P5A_EXECUTION_PLAN.md) for the remaining
+dependency order.

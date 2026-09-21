@@ -34,15 +34,17 @@ Claims, abandoned grants, and hypothetical broker rejection do not release reser
 
 P2A assumes exactly one gate owner for a declared scope. Its history, reservations, and token registry are in memory. Ordinary dataclass construction and reconstructed historical evidence cannot claim; Python introspection can copy a private issuer/token into an equivalent artifact, but that artifact shares the original grant's single consumption record. Another gate cannot consume it, even when deterministic grant IDs match. There is no hostile-process security: code that can mutate private gate internals is outside this guarantee. P2A provides application authority discipline, not cryptographic isolation, distributed locking, restart-safe idempotency, or evidence that a newly started process matches the brokerage account. P4A must remain shadow-only; P5A will require broker-authoritative reconciliation and durable duplicate handling, as well as submission-time revalidation, before paper submission is safe.
 
-## P5A.0 operational design requirements
+## P5A relationship and remaining authority requirements
 
-P5A paper execution is explicitly authorized as an engineering direction. P5A.0
-adds documentation and CI only; the P2A behavior above is unchanged. The
+HEAD includes an early bounded one-shot PAPER probe outside P2A: it uses typed
+broker evidence, a journal, a PAPER adapter, and submission-time checks. It does
+not change the P2A behavior above or establish P5A.3 reconciliation/lifecycle
+authority. [STATUS.md](STATUS.md) is authoritative for current coverage; the
 [execution contract](P5A_EXECUTION_CONTRACT.md) and
-[ADR 0005](decisions/0005-paper-execution-recovery.md) specify the future authority.
+[ADR 0005](decisions/0005-paper-execution-recovery.md) retain the design rationale.
 No live-capital trading is permitted.
 
-P5A requires a versioned durable risk authority preserving P2A pure rules and
+P5A.3 and later require a versioned durable risk authority preserving P2A pure rules and
 terminal decisions, with broker account/clock/asset eligibility, buying power,
 current controls, freshness, canary limits and durable daily usage. Admission,
 reservation, capability consumption and dispatch markers must be journaled before

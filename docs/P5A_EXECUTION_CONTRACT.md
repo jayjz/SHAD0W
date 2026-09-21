@@ -1,9 +1,9 @@
 # P5A paper execution contract
 
-Status: accepted design; **P5A.0 contains documentation and CI only**. Requirements
-below are future acceptance criteria, not claims of implemented safety. P2A and
-P4A remain complete within their existing bounds. Paper execution does not validate
-the strategy or establish profitability. Live-capital trading is prohibited.
+Status: normative P5A design contract. It preserves future acceptance criteria and
+is not the current implementation dashboard; see [STATUS.md](STATUS.md). P2A and
+P4A remain bounded, the early one-shot PAPER probe does not validate the strategy or
+establish profitability, and live-capital trading is prohibited.
 
 ## Authority and executable envelope
 
@@ -41,12 +41,12 @@ The first executable canary must enforce all of the following:
 The exact symbol, account binding, limits, freshness/deadline/close-guard values,
 buying-power buffer, run duration, and escalation procedure require operator
 approval in a versioned run manifest before activation. There are no enabled
-defaults. No order, account request, credentials, SDK, or HTTP dependency is added
-in P5A.0. The P4A `shadow-live-data` command remains market-data-only.
+defaults. At P5A.0 this contract added no order, account request, credentials, SDK,
+or HTTP dependency. The P4A `shadow-live-data` command remains market-data-only.
 
 ## Provider-neutral boundary and endpoint separation
 
-The future broker port accepts immutable typed requests and returns typed
+The P5A.3 target broker port accepts immutable typed requests and returns typed
 observations/results. Decimal quantities/prices, UTC source and receipt times,
 account/scope binding, evidence references, completeness, and explicit unknown
 states cross the boundary. SDK objects, HTTP responses, and provider JSON remain
@@ -116,15 +116,22 @@ opportunity remains terminal across restart. Exact redelivery cannot issue anoth
 capability; changed content under an existing identity halts as a conflict. Scope,
 strategy/configuration identity, and source dataset lineage must be stable across
 process sessions: P4A's session-derived dataset/configuration labels cannot be used
-unchanged for executable identity. Record a stable source-opportunity key and bind
+for executable identity. `session_id` is a unique capture/run/evidence identifier
+only; it is excluded from intent, source-opportunity, journal, and client-order
+identity. Record a stable source-opportunity key and bind
 its first canonical feature/availability evidence so a reconnect, new receipt time,
 or session name cannot manufacture another opportunity from the same source bar.
 Configuration changes are explicit migrations, never a retry mechanism.
 
 The source key is canonical causal identity: stable account/scope and feed or
 dataset lineage, instrument, completed-bar observation identity, strategy
-identity/version, and feature identity/version/window. Session IDs, reconnect
-counters, receipt times, and mutable display labels are excluded. The first
+identity/version, strategy configuration ID, signal direction, and feature
+identity/version/window. The current encoding is `shadow.source-opportunity.v2`;
+v1 did not distinguish configuration or direction and is deliberately not reused.
+The matching durable journal schema is `shadow.execution.journal.v4`; a v3 journal
+is rejected rather than being reinterpreted under the v2 source-key semantics.
+Session IDs, reconnect counters, receipt times, and mutable display labels are
+excluded. The first
 feature/signal/intent binding under that key is immutable; a material variant is a
 conflict and halts. An intact journal record proving no `dispatch_started` was ever
 committed is distinct from a potentially-submitted attempt. Any committed attempt,

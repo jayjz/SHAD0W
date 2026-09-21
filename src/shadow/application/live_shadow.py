@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 from shadow.adapters.alpaca.normalize import SUPPORTED_FEEDS, symbols_checked
 from shadow.adapters.alpaca.stream import DataCredentials, run_live
-from shadow.application.evidence import EvidenceWriter
+from shadow.application.evidence import EvidenceWriter, bootstrap_from_capture
 from shadow.application.shadow import ShadowConfig, ShadowSession
 from shadow.domain import Instrument
 from shadow.risk import OperationalQuantityConfig, RiskPolicy
@@ -23,11 +23,21 @@ def _parser() -> argparse.ArgumentParser:
         description="SHADOW MODE: Alpaca live market data; no order submission"
     )
     parser.add_argument("--session-id", required=True)
+    parser.add_argument(
+        "--operational-scope",
+        required=True,
+        help="stable risk/execution/journal authority scope; never a capture session ID",
+    )
     parser.add_argument("--code-revision", required=True)
     parser.add_argument(
         "--symbol", action="append", required=True, help="uppercase equity symbol; repeat"
     )
     parser.add_argument("--evidence-path", type=Path, required=True)
+    parser.add_argument(
+        "--bootstrap-capture",
+        type=Path,
+        help="strictly verified complete_stopped capture used only to seed completed-bar history",
+    )
     parser.add_argument(
         "--feed", choices=SUPPORTED_FEEDS, default=os.environ.get("ALPACA_DATA_FEED", "iex")
     )
@@ -46,15 +56,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--maximum-quote-age-seconds", type=int, default=15)
     parser.add_argument(
         "--source-dataset-id",
-        help="stable feed/dataset lineage; required when evidence may be prepared for PAPER",
+        required=True,
+        help="stable feed/dataset lineage; never derived from the capture session ID",
     )
     parser.add_argument(
         "--strategy-configuration-id",
-        help="stable strategy configuration identity; required for PAPER preparation",
+        required=True,
+        help="stable strategy configuration identity; never derived from the capture session ID",
     )
     parser.add_argument(
         "--quantity-configuration-id",
-        help="stable operational quantity identity; required for PAPER preparation",
+        required=True,
+        help="stable operational quantity identity; never derived from the capture session ID",
     )
     return parser
 
@@ -66,10 +79,7 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
     strategies = tuple(
         MeanReversionConfig(
             instrument=instrument,
-            configuration_id=(
-                arguments.strategy_configuration_id
-                or f"{arguments.session_id}:{instrument.identifier}:mean-reversion-v1"
-            ),
+            configuration_id=arguments.strategy_configuration_id,
             rolling_window=arguments.rolling_window,
             entry_threshold=arguments.entry_threshold,
             exit_threshold=arguments.exit_threshold,
@@ -80,19 +90,19 @@ def _config(arguments: argparse.Namespace) -> ShadowConfig:
     quantities = tuple(
         OperationalQuantityConfig(
             instrument,
-            arguments.quantity_configuration_id
-            or f"{arguments.session_id}:{instrument.identifier}:quantity-v1",
+            arguments.quantity_configuration_id,
             arguments.quantity,
         )
         for instrument in instruments
     )
     return ShadowConfig(
         session_id=arguments.session_id,
+        operational_scope=arguments.operational_scope,
         code_revision=arguments.code_revision,
         strategies=strategies,
         quantities=quantities,
         risk_policy=RiskPolicy(
-            policy_id=f"{arguments.session_id}:shadow-observability-v1",
+            policy_id=f"{arguments.operational_scope}:shadow-observability-v1",
             enabled=True,
             allowed_instruments=instruments,
             maximum_quantity_per_order=arguments.quantity,
@@ -118,11 +128,21 @@ def main() -> int:
         else DataCredentials.from_environment(os.environ)
     )
     print("SHADOW MODE — NO ORDER SUBMISSION")
-    writer = EvidenceWriter(arguments.evidence_path, config)
+    bootstrap_time = datetime.now(UTC)
+    bootstrap = (
+        None
+        if arguments.bootstrap_capture is None
+        else bootstrap_from_capture(arguments.bootstrap_capture, config, now=bootstrap_time)
+    )
+    session = ShadowSession(config)
+    bootstrap_record = None if bootstrap is None else session.bootstrap(bootstrap, bootstrap_time)
+    writer = EvidenceWriter(arguments.evidence_path, config, bootstrap)
+    if bootstrap_record is not None:
+        writer.write(bootstrap_record)
     try:
         asyncio.run(
             run_live(
-                ShadowSession(config),
+                session,
                 credentials,
                 writer,
                 duration=arguments.duration_seconds,

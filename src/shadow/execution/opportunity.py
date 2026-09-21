@@ -9,7 +9,7 @@ from shadow.domain import Instrument
 from shadow.execution.journal_codec import canonical_digest
 from shadow.features import FeatureInput, FeatureName, FeatureSnapshot
 from shadow.risk.models import OrderIntent
-from shadow.strategies import Signal
+from shadow.strategies import Signal, SignalType
 
 
 class SourceOpportunityError(ValueError):
@@ -38,6 +38,8 @@ class SourceOpportunityKey:
     completed_bar_observation_time: datetime
     strategy_id: str
     strategy_version: str
+    strategy_configuration_id: str
+    signal_type: SignalType
     feature_name: FeatureName
     feature_input: FeatureInput
     feature_implementation_version: str
@@ -50,6 +52,7 @@ class SourceOpportunityKey:
             "feed_lineage",
             "strategy_id",
             "strategy_version",
+            "strategy_configuration_id",
             "feature_implementation_version",
         ):
             _text(getattr(self, name), name)
@@ -64,6 +67,8 @@ class SourceOpportunityKey:
             self.feature_input, FeatureInput
         ):
             raise SourceOpportunityError("feature identity is invalid")
+        if not isinstance(self.signal_type, SignalType):
+            raise SourceOpportunityError("signal_type must be a SignalType")
         if isinstance(self.feature_window, bool) or not isinstance(self.feature_window, int):
             raise SourceOpportunityError("feature_window must be a positive integer")
         if self.feature_window <= 0:
@@ -73,7 +78,7 @@ class SourceOpportunityKey:
     def source_key(self) -> str:
         return canonical_digest(
             (
-                "shadow.source-opportunity.v1",
+                "shadow.source-opportunity.v2",
                 self.account_id,
                 self.operational_scope,
                 self.feed_lineage,
@@ -81,6 +86,8 @@ class SourceOpportunityKey:
                 self.completed_bar_observation_time,
                 self.strategy_id,
                 self.strategy_version,
+                self.strategy_configuration_id,
+                self.signal_type,
                 self.feature_name,
                 self.feature_input,
                 self.feature_implementation_version,
@@ -131,6 +138,8 @@ class SourceOpportunityBinding:
         if (
             self.signal.strategy_id != key.strategy_id
             or self.signal.strategy_version != key.strategy_version
+            or self.signal.configuration_id != key.strategy_configuration_id
+            or self.signal.signal_type is not key.signal_type
             or self.signal.feature_name is not key.feature_name
             or self.signal.feature_input is not key.feature_input
             or self.signal.feature_implementation_version != key.feature_implementation_version
@@ -185,6 +194,8 @@ def source_opportunity_key_for_intent(
         completed_bar_observation_time=signal.feature_observation_time,
         strategy_id=signal.strategy_id,
         strategy_version=signal.strategy_version,
+        strategy_configuration_id=signal.configuration_id,
+        signal_type=signal.signal_type,
         feature_name=signal.feature_name,
         feature_input=signal.feature_input,
         feature_implementation_version=signal.feature_implementation_version,
