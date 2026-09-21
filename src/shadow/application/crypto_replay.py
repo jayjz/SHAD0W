@@ -13,6 +13,7 @@ from shadow.application.crypto_evidence import (
     CryptoEvidenceError,
     _snapshot,
     canonical_json,
+    capture_sha256,
     decode_event,
 )
 from shadow.application.crypto_session import CryptoSession
@@ -27,6 +28,7 @@ class CryptoReplayResult:
     btc: BookSnapshot | None
     eth: BookSnapshot | None
     digest: str
+    capture_sha256: str
 
 
 def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -41,7 +43,9 @@ def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
 def replay(path: Path) -> CryptoReplayResult:
     raw = path.read_bytes()
     if not raw.endswith(b"\n"):
-        return CryptoReplayResult(CryptoCaptureStatus.INCOMPLETE, None, None, "")
+        return CryptoReplayResult(
+            CryptoCaptureStatus.INCOMPLETE, None, None, "", capture_sha256(path)
+        )
     try:
         lines = [
             json.loads(line, object_pairs_hook=_no_duplicates)
@@ -80,6 +84,12 @@ def replay(path: Path) -> CryptoReplayResult:
         if record.get("previous_record_hash") != previous:
             raise CryptoEvidenceError("bad previous hash")
         supplied = record.get("record_hash")
+        persisted_lineage = record.get("state_lineage")
+        expected_lineage = hashlib.sha256(
+            (previous + canonical_json(record.get("event"))).encode("utf-8")
+        ).hexdigest()
+        if persisted_lineage != expected_lineage:
+            raise CryptoEvidenceError("bad state lineage")
         unsigned = dict(record)
         unsigned.pop("record_hash", None)
         if (
@@ -116,10 +126,13 @@ def replay(path: Path) -> CryptoReplayResult:
         expected += 1
         lineage = hashlib.sha256((lineage + supplied).encode()).hexdigest()
     if not terminal:
-        return CryptoReplayResult(CryptoCaptureStatus.INCOMPLETE, None, None, "")
+        return CryptoReplayResult(
+            CryptoCaptureStatus.INCOMPLETE, None, None, "", capture_sha256(path)
+        )
     return CryptoReplayResult(
         status,
         session.snapshot(Instrument("BTC/USD")),
         session.snapshot(Instrument("ETH/USD")),
         session.state_digest(lineage),
+        capture_sha256(path),
     )

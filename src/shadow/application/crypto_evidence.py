@@ -44,6 +44,11 @@ def canonical_json(value: object) -> str:
     )
 
 
+def capture_sha256(path: Path) -> str:
+    """Return the identity of the exact persisted UTF-8 capture bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _decimal(value: Decimal) -> str:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise CryptoEvidenceError("finite Decimal required")
@@ -253,6 +258,9 @@ class CryptoEvidenceWriter:
             "snapshot": _snapshot(result.snapshot),
             "previous_record_hash": self._previous,
         }
+        payload["state_lineage"] = hashlib.sha256(
+            (self._previous + canonical_json(payload["event"])).encode("utf-8")
+        ).hexdigest()
         payload["record_hash"] = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
         self._write(payload)
         self._previous = str(payload["record_hash"])
