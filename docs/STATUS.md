@@ -6,6 +6,10 @@ implementation claim.
 
 ## IMPLEMENTED
 
+- **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
+  exact UTC nanosecond times, validation tests and the
+  [crypto market-data contract](CRYPTO_MARKET_DATA_CONTRACT.md).
+
 - **P0 research/data/features/simulation:** deterministic provider-neutral market
   contracts, feature kernel, mean-reversion hypothesis, chronological lifecycle,
   quote-side execution economics, and reproducible simulation evidence.
@@ -40,6 +44,9 @@ implementation claim.
 
 ## DESIGNED ONLY
 
+- **Crypto C1 market-data evidence:** normalization, bounded capture, book
+  reconstruction, offline replay and descriptive measurements are planned.
+
 - **P5A.3:** broker-authoritative reconciliation and operational lifecycle
   projection.
 - **P5A.6:** continuous lifecycle-backed PAPER application.
@@ -47,6 +54,8 @@ implementation claim.
   canary acceptance run.
 
 ## NOT IMPLEMENTED
+
+- Crypto execution and crypto strategy: **NOT IMPLEMENTED**.
 
 - Continuous or automatic PAPER trading, lifecycle-backed live exits, and automatic
   retry/recovery of uncertain submissions.

@@ -8,6 +8,9 @@ HEAD includes an early bounded supervised one-shot PAPER integration probe: brok
 
 ## Source of truth
 
+Crypto C0 values and the planned market-data-only C1 lane are bounded by
+[docs/CRYPTO_MARKET_DATA_CONTRACT.md](docs/CRYPTO_MARKET_DATA_CONTRACT.md); no crypto execution is authorized.
+
 1. Executable tests and verified behavior
 2. This file
 3. Explicit contracts

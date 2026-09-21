@@ -2,6 +2,12 @@
 
 ## Shape
 
+Crypto C0 adds an isolated provider-neutral value boundary in
+`shadow.domain.crypto_market`; its planned capture/replay lane has no execution,
+risk or strategy dependency. See the [crypto contract](CRYPTO_MARKET_DATA_CONTRACT.md)
+and [ADR 0006](decisions/0006-crypto-microstructure-boundary.md). Only values and
+local validation are implemented; connectivity and reconstruction remain planned.
+
 SHAD0W begins as a Python modular monolith with explicit ports/adapters boundaries. It must be easy to run deterministically from recorded inputs before it is easy to connect to external systems. A module should own one of these concepts:
 
 | Area | Responsibility |

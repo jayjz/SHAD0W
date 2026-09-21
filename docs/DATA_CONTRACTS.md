@@ -1,5 +1,9 @@
 # Data contracts
 
+The separate [crypto C0 contract](CRYPTO_MARKET_DATA_CONTRACT.md) defines trade,
+quote and book events using integer UTC nanoseconds. Its future evidence schema is
+`shadow.crypto-market.v1`; the existing P0/P4A contracts below remain unchanged.
+
 P0.1 implements provider-neutral Python domain values in `shadow.domain` and deterministic validation/identity functions in `shadow.data`. They use only the Python standard library. Provider SDK, dataframe, HTTP, database, and LLM objects are not accepted as cross-system contracts; a future adapter must translate them before this boundary.
 
 ## Time and observation semantics

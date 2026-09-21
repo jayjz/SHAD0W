@@ -14,6 +14,10 @@ probe. It does not provide continuous PAPER trading, broker-authoritative lifecy
 reconciliation, live-capital support, or a profitability claim. See
 [the current implementation status](docs/STATUS.md).
 
+[Crypto C0](docs/CRYPTO_MARKET_DATA_CONTRACT.md) adds typed BTC/USD and ETH/USD
+market-data contracts only. Crypto capture/replay is planned; crypto execution and
+strategy are not implemented.
+
 ---
 
 ## Why SHAD0W exists
