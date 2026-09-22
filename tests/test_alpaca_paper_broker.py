@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +27,9 @@ from shadow.execution.broker import (
     SubmissionStatus,
     SubmitRequest,
 )
+from shadow.execution.reconciliation import OperationalState, reconcile
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
+from tests.test_paper_dispatch import _dispatch_with_historical_status
 
 
 @dataclass
@@ -457,3 +461,96 @@ def test_full_documented_order_page_fails_closed_as_incomplete() -> None:
     ).read_snapshot()
     assert isinstance(result, BrokerError)
     assert result.reason == "incomplete PAPER order history/result window"
+
+
+def test_real_order_update_cannot_prove_precommit_history_but_window_collector_can(
+    tmp_path: Path,
+) -> None:
+    outcome, _ = _dispatch_with_historical_status(tmp_path, OrderStatus.FILLED)
+    assert outcome.attempt is not None
+    attempt = outcome.attempt
+    committed = attempt.committed_at
+    payload = order()
+    payload["client_order_id"] = attempt.client_order_id
+    payload["submitted_at"] = (committed + timedelta(seconds=1)).isoformat()
+    payload["updated_at"] = (committed + timedelta(seconds=2)).isoformat()
+    snapshot = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="paper-scope",
+        transport=RecordingTransport(
+            [HttpResponse(200, {}, b"[]"), HttpResponse(200, {}, json.dumps([payload]).encode())]
+        ),
+    ).read_snapshot()
+    assert not isinstance(snapshot, BrokerError)
+    assert snapshot.history_start > committed
+    assert reconcile(attempts=(attempt,), snapshot=snapshot).state is OperationalState.UNRESOLVED
+
+    transport = RecordingTransport(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([payload]).encode()),
+        ]
+    )
+    result = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="paper-scope",
+        transport=transport,
+    ).read_reconciliation_snapshot(earliest_attempt=committed)
+    assert not isinstance(result, BrokerError)
+    assert result.complete and result.history_start == committed
+    assert len(result.orders) == 1
+    assert reconcile(attempts=(attempt,), snapshot=result).state is OperationalState.ENTRY_PENDING
+    assert "after=" in transport.calls[2][1] and "until=" in transport.calls[2][1]
+
+
+def test_reconciliation_history_full_page_requires_cursor_and_exhaustion() -> None:
+    committed = datetime.now(UTC) - timedelta(minutes=2)
+    page = []
+    for index in range(500):
+        row = order()
+        row["id"] = f"order-{index}"
+        row["client_order_id"] = f"client-{index}"
+        row["submitted_at"] = (committed + timedelta(microseconds=index)).isoformat()
+        page.append(row)
+    transport = RecordingTransport(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps(page).encode()),
+            HttpResponse(200, {}, b"[]"),
+        ]
+    )
+    adapter = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id=ACCOUNT_NUMBER,
+        operational_scope="scope",
+        transport=transport,
+    )
+    result = adapter.read_reconciliation_snapshot(earliest_attempt=committed)
+    assert not isinstance(result, BrokerError)
+    assert len(result.orders) == 500
+    assert "after_order_id=order-499" in transport.calls[3][1]
+    assert "after=" not in transport.calls[3][1]
+
+    capped = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps(page).encode()),
+        ]
+    ).read_reconciliation_snapshot(earliest_attempt=committed, max_pages=1)
+    assert isinstance(capped, BrokerError)
+    assert capped.reason == "incomplete PAPER order history/result window"
+
+    duplicate = broker(
+        [
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps([page[0], page[0]]).encode()),
+        ]
+    ).read_reconciliation_snapshot(earliest_attempt=committed)
+    assert isinstance(duplicate, BrokerError)
+    assert duplicate.reason == "duplicate PAPER history page row"

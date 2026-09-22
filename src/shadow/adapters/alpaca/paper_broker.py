@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -441,9 +441,10 @@ class AlpacaPaperBroker:
                 if not isinstance(row, dict):
                     raise AlpacaPaperError("malformed PAPER order row")
                 orders.append(self._order(row, orders_received, reference))
-            history_start = min(
-                (order.evidence.observation_time for order in orders), default=orders_received
-            )
+            # A returned row's updated_at is not the start of a complete
+            # history query.  This unbounded read establishes only current
+            # inventory; prior journal coverage requires the explicit collector.
+            history_start = orders_received
             return BrokerSnapshot(
                 evidence,
                 tuple(positions),
@@ -456,6 +457,153 @@ class AlpacaPaperBroker:
         except AlpacaPaperError as exc:
             return BrokerError(
                 self._evidence("alpaca:snapshot:malformed", orders_received, orders_received),
+                ErrorCategory.MALFORMED,
+                str(exc),
+            )
+
+    def read_reconciliation_snapshot(
+        self, *, earliest_attempt: datetime, max_pages: int = 10
+    ) -> BrokerSnapshot | BrokerError:
+        """Collect a bounded, explicit submission-history window for P5A.3.
+
+        The first page uses Alpaca's exclusive time bounds. Later pages use its
+        exclusive order-ID cursor, which cannot be combined with time bounds.
+        Every page is checked against the fixed cut before coverage is asserted.
+        This read is evidence only; it does not create an atomic broker cut.
+        """
+        if earliest_attempt.tzinfo is None or earliest_attempt.utcoffset() is None:
+            raise AlpacaPaperError("aware earliest attempt required")
+        if isinstance(max_pages, bool) or not 1 <= max_pages <= 100:
+            raise AlpacaPaperError("bounded positive page limit required")
+        start = earliest_attempt.astimezone(UTC)
+        positions_response, cut = self._call("GET", "/v2/positions")
+        if positions_response.status != 200:
+            return self._error(positions_response, cut, "positions")
+        if start > cut:
+            return BrokerError(
+                self._evidence("alpaca:history:future", cut, cut),
+                ErrorCategory.MALFORMED,
+                "earliest attempt is after broker cut",
+            )
+        try:
+            positions_payload = json.loads(positions_response.body.decode("utf-8"))
+            if not isinstance(positions_payload, list):
+                raise AlpacaPaperError("malformed PAPER positions response")
+            positions: list[BrokerPosition] = []
+            position_ref = _request_id(positions_response.headers) or "unknown"
+            for row in positions_payload:
+                if not isinstance(row, dict):
+                    raise AlpacaPaperError("malformed PAPER position row")
+                positions.append(
+                    BrokerPosition(
+                        self._evidence(position_ref, cut, cut),
+                        Instrument(str(row["symbol"])),
+                        _decimal(row["qty"], positive=True),
+                    )
+                )
+
+            # Open orders predating the journal window remain operationally
+            # relevant.  A full open page cannot prove their complete inventory.
+            open_response, open_received = self._call(
+                "GET", "/v2/orders?status=open&limit=500&nested=false"
+            )
+            if open_response.status != 200:
+                return self._error(open_response, open_received, "open-orders")
+            open_payload = json.loads(open_response.body.decode("utf-8"))
+            if not isinstance(open_payload, list) or len(open_payload) >= 500:
+                raise AlpacaPaperError("incomplete PAPER open-order inventory")
+            rows: dict[str, dict[str, object]] = {}
+            for row in open_payload:
+                if not isinstance(row, dict):
+                    raise AlpacaPaperError("malformed PAPER order row")
+                order_id = str(row["id"])
+                if order_id in rows:
+                    raise AlpacaPaperError("duplicate PAPER open-order row")
+                rows[order_id] = row
+
+            cursor: str | None = None
+            last_submitted: datetime | None = None
+            history_ids: set[str] = set()
+            exhausted = False
+            received = open_received
+            for _ in range(max_pages):
+                if cursor is None:
+                    # Alpaca's `after` is exclusive; subtract one microsecond so
+                    # an order submitted exactly at commit is in the window.
+                    after = (start - timedelta(microseconds=1)).isoformat()
+                    until = (cut + timedelta(microseconds=1)).isoformat()
+                    query = urllib.parse.urlencode(
+                        {
+                            "status": "all",
+                            "limit": 500,
+                            "direction": "asc",
+                            "after": after,
+                            "until": until,
+                            "nested": "false",
+                        }
+                    )
+                else:
+                    query = urllib.parse.urlencode(
+                        {
+                            "status": "all",
+                            "limit": 500,
+                            "direction": "asc",
+                            "after_order_id": cursor,
+                            "nested": "false",
+                        }
+                    )
+                page_response, received = self._call("GET", "/v2/orders?" + query)
+                if page_response.status != 200:
+                    return self._error(page_response, received, "history")
+                page = json.loads(page_response.body.decode("utf-8"))
+                if not isinstance(page, list) or len(page) > 500:
+                    raise AlpacaPaperError("malformed PAPER order history page")
+                crossed_cut = False
+                for row in page:
+                    if not isinstance(row, dict):
+                        raise AlpacaPaperError("malformed PAPER order row")
+                    submitted = _timestamp(row.get("submitted_at"))
+                    if last_submitted is not None and submitted < last_submitted:
+                        raise AlpacaPaperError("nonmonotonic PAPER order pagination")
+                    last_submitted = submitted
+                    if submitted > cut:
+                        crossed_cut = True
+                        break
+                    if submitted < start:
+                        raise AlpacaPaperError("PAPER history escaped requested window")
+                    order_id = str(row["id"])
+                    if order_id in history_ids:
+                        raise AlpacaPaperError("duplicate PAPER history page row")
+                    history_ids.add(order_id)
+                    prior = rows.get(order_id)
+                    if prior is not None and prior != row:
+                        raise AlpacaPaperError("contradictory PAPER order pages")
+                    rows[order_id] = row
+                if crossed_cut or len(page) < 500:
+                    exhausted = True
+                    break
+                next_cursor = str(page[-1]["id"])
+                if next_cursor == cursor:
+                    raise AlpacaPaperError("stalled PAPER order pagination")
+                cursor = next_cursor
+            if not exhausted:
+                raise AlpacaPaperError("incomplete PAPER order history/result window")
+            reference = f"positions:{position_ref}|history:{_request_id(page_response.headers) or 'unknown'}"
+            evidence = self._evidence(reference, received, received)
+            normalized_positions = tuple(
+                BrokerPosition(evidence, row.instrument, row.quantity) for row in positions
+            )
+            orders = tuple(self._order(row, received, reference) for row in rows.values())
+            return BrokerSnapshot(evidence, normalized_positions, orders, True, True, start, cut)
+        except (
+            KeyError,
+            ValueError,
+            AlpacaPaperError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            return BrokerError(
+                self._evidence("alpaca:history:malformed", datetime.now(UTC), datetime.now(UTC)),
                 ErrorCategory.MALFORMED,
                 str(exc),
             )

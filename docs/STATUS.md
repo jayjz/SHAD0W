@@ -30,8 +30,14 @@ implementation claim.
   bars needed for a feature window. Historical seeds are not live-actionable bars;
   the first fresh live bar remains the only candidate trigger.
 - **P5A foundations:** provider-neutral broker contracts/fake, SQLite journal with
-  local ownership, `shadow.source-opportunity.v2`, and deterministic PAPER client
-  order identity. Journal schema v4 fails closed on v3 journals.
+  local ownership, `shadow.source-opportunity.v2`, deterministic PAPER client
+  order identity, and a pure broker-authoritative reconciliation reducer. The
+  reducer projects `FLAT`, `ENTRY_PENDING`, `HOLDING`, `EXIT_PENDING`,
+  `UNRESOLVED`, or `HALTED` from persisted attempts and complete typed broker
+  evidence; it has no submission authority. Journal schema v4 fails closed on
+  v3 journals. A bounded Alpaca PAPER history collector can request an explicit
+  window from the earliest committed attempt and exhaust order pages; it is
+  evidence collection only and is not composed into continuous PAPER trading.
 
 ## PARTIALLY IMPLEMENTED
 
@@ -43,15 +49,13 @@ implementation claim.
   It is an early bounded supervised one-shot PAPER integration probe, not final
   P5A.8 acceptance and not continuous trading.
 - **Post-attempt checks:** the probe can persist limited lookup/snapshot evidence
-  and halt on uncertainty. This is not broker-authoritative reconciliation or an
-  operational lifecycle projection.
+  and halt on uncertainty. The probe itself remains a bounded one-shot path; the
+  future continuous application must consume the separate reconciliation reducer.
 
 ## DESIGNED ONLY
 
 - **Crypto C1 measurements:** descriptive research measurements remain planned.
 
-- **P5A.3:** broker-authoritative reconciliation and operational lifecycle
-  projection.
 - **P5A.6:** continuous lifecycle-backed PAPER application.
 - **P5A.7/P5A.8:** recovery acceptance and the later full-reconciliation supervised
   canary acceptance run.

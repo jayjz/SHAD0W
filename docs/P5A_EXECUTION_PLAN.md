@@ -23,7 +23,8 @@ reserved for completion of P5A.3–P5A.7 and operator approval.
 | P5A.8 | P5A.7, operator approval | Bounded supervised paper canary and evidence review |
 
 Current phase interpretation: P5A.1 and P5A.2 foundations are implemented; P5A.3
-is designed only; P5A.4/P5A.5 have limited components supporting the early probe
+has a deterministic pure reducer but no continuous application or durable
+reconciliation projection; P5A.4/P5A.5 have limited components supporting the early probe
 but are not phase-complete; P5A.6/P5A.7/P5A.8 are not implemented. The existing
 `shadow-paper-canary` is an early bounded supervised one-shot PAPER integration
 probe, not final P5A.8 acceptance.
@@ -79,6 +80,24 @@ intact journal cannot prove a whole-storage rollback; missing historical executi
 evidence remains unresolved until P5A.3.
 
 ## P5A.3 — Broker reconciliation and reservation lifecycle
+
+Implemented bounded slice: `shadow.execution.reconciliation.reconcile()` accepts
+committed journal attempts, a complete typed `BrokerSnapshot`, and optional typed
+client-ID lookup orders. It is a no-I/O/no-submit reducer returning
+`OperationalState` and Decimal exposure. It requires complete positions and order
+history covering every attempt; uncertain or unobserved committed attempts remain
+`UNRESOLVED`; unlinked, contradictory, replacement-incomplete, and fractional
+state is `HALTED`. A future P5A.6 application consumes it directly and may evaluate
+entry only for `FLAT` and exit only for `HOLDING`. It does not yet persist repeated
+reconciliation revisions or collect stream evidence itself. The Alpaca PAPER adapter
+now has a bounded `read_reconciliation_snapshot(earliest_attempt=...)` evidence
+collector. It requests an explicit submission-time history window, follows Alpaca's
+exclusive order-ID page cursor, and asserts coverage only after exhausting pages
+within its cap. The ordinary `read_snapshot()` asserts no pre-read history coverage;
+an order's `updated_at` is not a valid history start. The collector is not wired into
+continuous PAPER composition and its sequential reads are not an atomic broker cut.
+The reducer deduplicates equivalent snapshot/lookup order facts, treats replacement
+fills as cumulative across a chain, and halts on simultaneous outstanding BUY/SELL.
 
 Scope: add `src/shadow/execution/reconciliation.py` and deterministic lifecycle
 reducers over the port/journal. Startup, disconnect, uncertain attempts, and
