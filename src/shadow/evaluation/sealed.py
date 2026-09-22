@@ -299,3 +299,288 @@ def _summary(evaluation: HistoricalEvaluationResult, currency: str) -> tuple[int
     if not summaries:
         return 0, Decimal(0)
     return summaries[0].eligible_trade_count, summaries[0].net_result_total
+
+
+@dataclass(frozen=True, slots=True)
+class FinalRelease:
+    """One sealed final observation with only descriptive, currency-local meaning."""
+
+    sealed_study: SealedStudy
+    final_manifest: ExperimentManifest
+    ordinary_trade_count: int
+    aggregate_net_result: Decimal
+    disposition: DescriptiveDisposition
+    limitations: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sealed_study, SealedStudy):
+            raise SealedStudyError("final release requires a sealed study")
+        _validate_manifest(
+            self.sealed_study.study_plan,
+            self.final_manifest,
+            self.sealed_study.study_plan.final_dataset,
+        )
+        if (
+            self.final_manifest.strategy_configuration_fingerprint
+            != self.sealed_study.development_selection.selected_candidate_fingerprint
+        ):
+            raise SealedStudyError("final manifest does not use the sealed selected candidate")
+        if self.ordinary_trade_count < 0 or not self.aggregate_net_result.is_finite():
+            raise SealedStudyError("invalid final descriptive summary")
+        if not isinstance(self.disposition, DescriptiveDisposition):
+            raise SealedStudyError("invalid final descriptive disposition")
+        if self.disposition is not descriptive_disposition(
+            self.ordinary_trade_count,
+            self.aggregate_net_result,
+            self.sealed_study.study_plan.minimum_ordinary_trade_count,
+        ):
+            raise SealedStudyError(
+                "stored final disposition disagrees with the descriptive criterion"
+            )
+        if not isinstance(self.limitations, tuple) or any(
+            not value or value != value.strip() for value in self.limitations
+        ):
+            raise SealedStudyError(
+                "final limitations must be an immutable tuple of nonempty strings"
+            )
+
+    @property
+    def sealed_study_id(self) -> str:
+        return self.sealed_study.sealed_study_id
+
+    @classmethod
+    def from_evaluation(
+        cls, sealed_study: SealedStudy, evaluation: HistoricalEvaluationResult
+    ) -> FinalRelease:
+        _validate_manifest(
+            sealed_study.study_plan, evaluation.manifest, sealed_study.study_plan.final_dataset
+        )
+        count, net = _summary(evaluation, sealed_study.study_plan.quote_currency)
+        disposition = descriptive_disposition(
+            count, net, sealed_study.study_plan.minimum_ordinary_trade_count
+        )
+        limitations = (
+            *sealed_study.study_plan.limitations,
+            (
+                "Descriptive survival is not evidence of edge, significance, "
+                "robustness, or live readiness."
+            ),
+        )
+        return cls(sealed_study, evaluation.manifest, count, net, disposition, limitations)
+
+
+def _ref_json(value: FrozenBarDatasetRef) -> dict[str, Any]:
+    return {
+        "dataset_id": value.dataset_id,
+        "sha256": value.sha256,
+        "instrument_universe": list(value.instrument_universe),
+        "source": value.source,
+        "bar_interval_microseconds": value.bar_interval_microseconds,
+        "coverage_start": value.coverage_start.isoformat(),
+        "coverage_end": value.coverage_end.isoformat(),
+        "record_count": value.record_count,
+        "provenance_id": value.provenance_id,
+        "retrieval_method": value.retrieval_method,
+        "source_timezone": value.source_timezone,
+        "session": value.session,
+        "adjustment_policy": value.adjustment_policy,
+        "schema_version": value.schema_version,
+    }
+
+
+def _manifest_json(value: ExperimentManifest) -> dict[str, Any]:
+    document = {name: getattr(value, name) for name in value.__dataclass_fields__}
+    document["limitations"] = list(value.limitations)
+    return document
+
+
+def _plan_json(value: StudyPlan) -> dict[str, Any]:
+    document = {
+        **{
+            name: getattr(value, name)
+            for name in value.__dataclass_fields__
+            if name not in {"train_dataset", "development_dataset", "final_dataset"}
+        },
+        "train_dataset": _ref_json(value.train_dataset),
+        "development_dataset": _ref_json(value.development_dataset),
+        "final_dataset": _ref_json(value.final_dataset),
+    }
+    document["limitations"] = list(value.limitations)
+    document["candidate_fingerprints"] = list(value.candidate_fingerprints)
+    document["candidate_set_id"] = value.candidate_set_id
+    return document
+
+
+def _release_document(release: FinalRelease) -> dict[str, Any]:
+    return {
+        "schema_version": SEALED_STUDY_SCHEMA_VERSION,
+        "sealed_study_id": release.sealed_study_id,
+        "study_plan": _plan_json(release.sealed_study.study_plan),
+        "development_selection": {
+            "study_id": release.sealed_study.development_selection.study_id,
+            "selected_candidate_fingerprint": (
+                release.sealed_study.development_selection.selected_candidate_fingerprint
+            ),
+            "development_manifest": _manifest_json(
+                release.sealed_study.development_selection.development_manifest
+            ),
+            "selection_evidence": release.sealed_study.development_selection.selection_evidence,
+        },
+        "dataset_references": {
+            "train": _ref_json(release.sealed_study.study_plan.train_dataset),
+            "development": _ref_json(release.sealed_study.study_plan.development_dataset),
+            "final": _ref_json(release.sealed_study.study_plan.final_dataset),
+        },
+        "candidate_set": list(release.sealed_study.study_plan.candidate_fingerprints),
+        "selected_candidate": (
+            release.sealed_study.development_selection.selected_candidate_fingerprint
+        ),
+        "final_manifest": _manifest_json(release.final_manifest),
+        "criterion": {
+            "minimum_ordinary_trade_count": (
+                release.sealed_study.study_plan.minimum_ordinary_trade_count
+            ),
+            "currency": release.sealed_study.study_plan.quote_currency,
+        },
+        "disposition": release.disposition.value,
+        "observed_summary": {
+            "ordinary_trade_count": release.ordinary_trade_count,
+            "aggregate_net_result": str(release.aggregate_net_result),
+        },
+        "limitations": list(release.limitations),
+    }
+
+
+def _release_path(root: Path, sealed_study_id: str) -> Path:
+    return root / "final-releases" / sealed_study_id[:2] / f"{sealed_study_id}.json"
+
+
+def persist_final_release(root: Path, release: FinalRelease) -> Path:
+    """Atomically create one non-overwriting canonical release for a sealed study."""
+    target = _release_path(root, release.sealed_study_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    contents = json.dumps(_release_document(release), sort_keys=True, separators=(",", ":")).encode(
+        "ascii"
+    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".release-", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(contents)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o444)
+        try:
+            os.link(temporary, target)
+        except FileExistsError as exc:
+            raise SealedStudyError("a final release already exists for this sealed study") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def _ref_from_json(value: Any) -> FrozenBarDatasetRef:
+    if not isinstance(value, dict):
+        raise SealedStudyError("frozen dataset reference must be an object")
+    return FrozenBarDatasetRef(
+        dataset_id=value["dataset_id"],
+        sha256=value["sha256"],
+        instrument_universe=tuple(value["instrument_universe"]),
+        source=value["source"],
+        bar_interval_microseconds=value["bar_interval_microseconds"],
+        coverage_start=datetime.fromisoformat(value["coverage_start"]),
+        coverage_end=datetime.fromisoformat(value["coverage_end"]),
+        record_count=value["record_count"],
+        provenance_id=value["provenance_id"],
+        retrieval_method=value["retrieval_method"],
+        source_timezone=value["source_timezone"],
+        session=value["session"],
+        adjustment_policy=value["adjustment_policy"],
+        schema_version=value["schema_version"],
+    )
+
+
+def _manifest_from_json(value: Any) -> ExperimentManifest:
+    if not isinstance(value, dict):
+        raise SealedStudyError("manifest must be an object")
+    return ExperimentManifest(**{**value, "limitations": tuple(value["limitations"])})
+
+
+def load_final_release(root: Path, sealed_study_id: str) -> FinalRelease:
+    """Independently parse and revalidate every persisted P1B firewall relation."""
+    _sha(sealed_study_id, "sealed_study_id")
+    target = _release_path(root, sealed_study_id)
+    try:
+        document = json.loads(target.read_bytes())
+        if (
+            not isinstance(document, dict)
+            or document.get("schema_version") != SEALED_STUDY_SCHEMA_VERSION
+        ):
+            raise SealedStudyError("unsupported final release schema")
+        plan_value = document["study_plan"]
+        if not isinstance(plan_value, dict):
+            raise SealedStudyError("study plan must be an object")
+        plan_arguments = {
+            key: value
+            for key, value in plan_value.items()
+            if key
+            not in {
+                "train_dataset",
+                "development_dataset",
+                "final_dataset",
+                "candidate_set_id",
+            }
+        }
+        plan = StudyPlan(
+            **{
+                **plan_arguments,
+                "limitations": tuple(plan_arguments["limitations"]),
+                "candidate_fingerprints": tuple(plan_arguments["candidate_fingerprints"]),
+            },
+            train_dataset=_ref_from_json(plan_value["train_dataset"]),
+            development_dataset=_ref_from_json(plan_value["development_dataset"]),
+            final_dataset=_ref_from_json(plan_value["final_dataset"]),
+        )
+        if plan_value.get("candidate_set_id") != plan.candidate_set_id:
+            raise SealedStudyError("candidate-set identity disagrees with candidate fingerprints")
+        selection_value = document["development_selection"]
+        selection = DevelopmentSelection(
+            study_id=selection_value["study_id"],
+            selected_candidate_fingerprint=selection_value["selected_candidate_fingerprint"],
+            development_manifest=_manifest_from_json(selection_value["development_manifest"]),
+            selection_evidence=selection_value["selection_evidence"],
+        )
+        sealed = SealedStudy(plan, selection)
+        summary = document["observed_summary"]
+        release = FinalRelease(
+            sealed,
+            _manifest_from_json(document["final_manifest"]),
+            summary["ordinary_trade_count"],
+            Decimal(summary["aggregate_net_result"]),
+            DescriptiveDisposition(document["disposition"]),
+            tuple(document["limitations"]),
+        )
+    except SealedStudyError:
+        raise
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SealedStudyError("malformed final release artifact") from exc
+    if (
+        document.get("sealed_study_id") != sealed_study_id
+        or release.sealed_study_id != sealed_study_id
+    ):
+        raise SealedStudyError("final release sealed-study identity disagreement")
+    for reference in (
+        release.sealed_study.study_plan.train_dataset,
+        release.sealed_study.study_plan.development_dataset,
+        release.sealed_study.study_plan.final_dataset,
+    ):
+        try:
+            load_frozen_bars(root, reference)
+        except ValueError as exc:
+            raise SealedStudyError("final release references an invalid frozen dataset") from exc
+    expected = _release_document(release)
+    if document != expected:
+        raise SealedStudyError(
+            "final release contains inconsistent or noncanonical derived evidence"
+        )
+    return release
