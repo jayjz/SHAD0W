@@ -149,6 +149,10 @@ The return denominator and both returns exist only when entry and exit prices ar
 
 `ExperimentManifest` requires SHA-256 fingerprints for the validated bar dataset, supplied quote multiset, supplied execution-opportunity multiset, strategy configuration, execution configuration, economics configurations, and complete supplied simulation evidence. It also records feature/simulation implementation versions, caller-supplied code revision, optional caller labels, an evaluation-model identity, and mandatory limitations. Canonical identity is independent of incidental evidence order and mutable Decimal context, retains duplicate supplied evidence, and does not claim authentication or unavailable generator identity. Quote evidence deliberately has no dataset-level provenance metadata in `SimulationResult`.
 
+## P1B frozen bar artifacts
+
+`freeze_bars` first runs P0.1 validation and writes the exact existing canonical bar-dataset bytes at `frozen-bars/<sha-prefix>/<sha>.json`. The immutable `FrozenBarDatasetRef` carries the digest plus dataset ID, instrument universe, source, interval, coverage, record count, and identity-bearing provenance/session metadata. Equal bytes deduplicate; a conflicting existing identity is an error; no mutable alias exists. Loading requires the expected path, digest, canonical byte round-trip, schema, decoded bars, P0.1 validation, and reference metadata to agree. The boundary does not sort, fill, deduplicate, normalize, or repair beyond P0.1's declared canonical semantics.
+
 ## P2A paper risk contracts
 
 `OrderIntent` is immutable and provider-neutral. It retains operational scope, the complete source `Signal`, instrument, BUY/SELL side, finite requested quantity, source-derived intent time, operational quantity-configuration identity, paper target, market semantic, and DAY time-in-force. `OrderIntent.from_signal` maps `long_entry` to BUY and `exit` to SELL and always uses the signal decision time, so consumer time cannot rewrite the proposal. The quantity configuration is operational and independent of P0.5C research economics.
