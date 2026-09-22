@@ -8,6 +8,9 @@ Spine SHA at branch creation: `01b6fc33f6806095859bb161c649d438c5774e66`
 Historical P1B SHA: `9aec707ba48d497177fafd1d12019c4364871e00`
 (`fix/p1b-content-integrity`)
 
+There is one numbering system: GitHub issues #3–#10. Do not invent a
+parallel "Ticket N" namespace.
+
 ## Diagnosis
 
 SHAD0W's bottleneck is not missing architecture. It is uncollapsed
@@ -19,7 +22,7 @@ execution path live on different refs. `main` is behind both.
 1. Spine = `01b6fc3`. Selectively port P1B onto it. Do not merge `main`
    forward first.
 2. First remote change = this branch + sprint/inventory docs only.
-3. Eight GitHub issues, one ticket per agent session.
+3. Eight GitHub issues (#3–#10). One issue per agent session.
 4. Existing P1B sealed artifacts are immutable historical evidence.
    Integration reproduction does not overwrite their identity.
 5. Final proof requires sealed-study → deployment-manifest → live-opportunity
@@ -45,7 +48,7 @@ deployment manifest
 
 P1B has zero authority over paper journal identity.
 
-## Conflict classes (Ticket 0)
+## Conflict classes (Issue #3)
 
 | Class | Meaning | Action |
 | --- | --- | --- |
@@ -72,34 +75,48 @@ Never rewrite an existing sealed identity.
   outputs are identical. Link it as reproduction/supersession. Do not
   pretend the integration commit is the same study.
 
-## Ticket order
+## Issue order
 
-| # | Purpose |
-| --- | --- |
-| 1 | Inventory and semantic conflict classification |
-| 2 | Port sealed P1B research integrity onto operational spine |
-| 3 | Audit P5A implementation against execution contract |
-| 4 | Bind sealed study identity to PAPER deployment |
-| 5 | Offline end-to-end proof + mutation / negative controls |
-| 6 | Prepare supervised Alpaca PAPER canary |
-| 7 | Operator executes bounded canary (not an agent unless assigned) |
-| 8 | Close broker reconciliation and recovery gaps |
-| 9 | Merge proof-convergence branch; retire superseded refs |
+```
+#3 Inventory / conflict map
+ ↓
+#4 Port P1B
+ ↓
+#5 Audit P5A
+ ↓
+#6 Bind sealed study → deployment
+ ↓
+#7 Offline proof bundle
+ ↓
+#8 Prepare canary
+ ↓
+HUMAN OPERATOR GATE (not a GitHub issue; agents do not arm)
+ ↓
+#9 Reconciliation / recovery
+ ↓
+#10 Merge + retire refs
+```
 
-Ticket 6/7 may run as an *early integration probe* if labeled as such.
-They do not close the portfolio claim.
+#8 may run as an *early integration probe* if labeled as such. It does
+not close the portfolio claim. Operator execution sits between #8 and #9
+as a gate, not a numbered ticket.
+
+Do not begin #4 until #3 produces the explicit port manifest and all
+relevant branch tips pass—or failures are documented as environment vs
+product failures.
 
 ## Out of sprint
 
 Crypto execution combined with equity paper. Live capital. New strategies.
 LLM authority. Domain-type renames. Force-push. Squash of the convergence PR.
+Updating `AGENTS.md` phase text before Issue #5.
 
 ## Agent session contract
 
 1. Read `AGENTS.md`, this file, `docs/P5A_EXECUTION_CONTRACT.md`, ADR 0005.
 2. `git fetch` and print SHAs of `main`, this branch, `feat/crypto-market-data-foundation`, `feat/p5a-paper-canary`, `feat/live-shadow-warm-start`, `fix/p1b-content-integrity`. If they moved unexpectedly, stop.
 3. Work only on `integ/p5a-reconcile-canary`.
-4. One issue per session.
+4. Work one GitHub issue per session. Prompt: "Work GitHub issue #N only."
 5. Canonical checks before commit: `uv run pytest`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src tests`, `git diff --check`.
 6. End with files touched, tests run, invariants checked, what the next agent must not redo.
 

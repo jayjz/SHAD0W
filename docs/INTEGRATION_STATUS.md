@@ -1,6 +1,7 @@
 # Integration status
 
-Filled by Ticket 1. This stub records the branch snapshot at sprint start.
+Filled by Issue #3. This stub records the branch snapshot at sprint start.
+Do not update `AGENTS.md` until Issue #5.
 
 ## Refs at 2026-09-21
 
@@ -13,19 +14,48 @@ Filled by Ticket 1. This stub records the branch snapshot at sprint start.
 | `fix/p1b-content-integrity` | `9aec707ba48d497177fafd1d12019c4364871e00` | Historical sealed P1B |
 | `integ/p5a-reconcile-canary` | created from `01b6fc3` | Convergence working branch |
 
-## Ticket 1 must complete
+## Issue #3 must complete
+
+### Ancestry table
+
+| Ref | Ahead/behind spine | Merge base | Unique commits | Classification |
+| --- | --- | --- | --- | --- |
+| | | | | |
+
+### Each unique P1B commit
+
+| SHA | Purpose | Paths touched | A/B/C/D | Port whole / port paths / superseded / investigate |
+| --- | --- | --- | --- | --- |
+| | | | | |
 
 - File-level conflict map: P1B vs spine vs canary vs `main`.
 - Classify each conflict A/B/C/D per `docs/SPRINT_CLEANUP.md`.
 - Packages unique to one line.
 - Whether P1B evaluation depends on paper journal / client-ID (expected: no).
-- Isolated test results on each tip.
+- Isolated test results on each tip. Separate environment failures from product failures.
 - Presence/absence of recorded canary artifacts (paths only; no secrets).
 - Whether `docs/P5A_CANARY_RUNBOOK.md` exists on the spine.
 
+### Proposed P1B port manifest (required output of #3)
+
+```
+PORT:
+- ...
+KEEP FROM SPINE:
+- ...
+MANUAL RECONCILIATION:
+- ...
+DO NOT PORT:
+- ...
+CLASS D:
+- none
+```
+
+Do not begin Issue #4 until this manifest exists and tip checks pass or are classified environment vs product.
+
 ## Capability claims
 
-Do not update `AGENTS.md` phase text until Ticket 3 audit is done.
+Do not update `AGENTS.md` phase text until Issue #5 audit is done.
 `main` documentation still describes unimplemented broker execution.
 The spine has later paper/canary/crypto work. Treat that as unverified until
 audited against the contract.
