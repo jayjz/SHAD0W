@@ -30,6 +30,8 @@ The intended flow is data → normalization/validation → features → strategy
 
 The current `domain` and `data` modules provide immutable provider-neutral `Bar`, `Quote`, provenance, and dataset-metadata values plus fail-closed collection validation and canonical dataset identity. They deliberately contain no ingestion adapter: a future adapter must translate provider timestamps and source conventions before creating these values. The boundary accepts neither provider responses nor dataframe objects.
 
+P1B extends `data` with a local content-addressed frozen-bar artifact boundary and `evaluation` with immutable `StudyPlan`, `DevelopmentSelection`, `SealedStudy`, and `FinalRelease` contracts. This is a research-integrity boundary: final data has no API authority over candidate declaration, selection, assumptions, criterion, or implementation identity. It introduces no broker, risk, portfolio, optimization, UI, or provider authority.
+
 For a `Bar`, `observation_time` is the **end** of its represented interval. `availability_time` is the earliest modeled instant at which a strategy may consume the completed record; the source of that assertion is an explicit availability-semantics value. Both timestamps are normalized to UTC, while source timezone/session descriptions remain provenance. This permits a later simulation to enforce availability without retroactively changing a record.
 
 ## Implemented P0.2A feature boundary
