@@ -44,6 +44,7 @@ from shadow.execution.broker import (
     TradeUpdate,
     UpdateKind,
 )
+from shadow.execution.crypto import BtcBrokerAsset, BtcSubmitRequest
 from shadow.features import (
     FeatureInput,
     FeatureName,
@@ -171,6 +172,8 @@ _ENUM_BY_NAME = {item.__name__: item for item in _ENUMS}
 _DATACLASSES: tuple[type[Any], ...] = (
     Bar,
     BarInterval,
+    BtcBrokerAsset,
+    BtcSubmitRequest,
     BrokerAccount,
     BrokerAsset,
     BrokerClock,

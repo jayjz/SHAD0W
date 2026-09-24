@@ -10,8 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from decimal import Decimal
 from enum import StrEnum
+from fractions import Fraction
 
 from shadow.execution.broker import BrokerOrder, BrokerSnapshot, OrderStatus
+from shadow.execution.crypto import ExecutionAsset, execution_asset
 from shadow.execution.journal import CommittedAttempt
 from shadow.risk.models import OrderSide
 
@@ -124,6 +126,10 @@ def reconcile(
     if len({attempt.request.instrument for attempt in attempts}) != 1:
         return _result(OperationalState.HALTED, reason="multiple journal instruments")
 
+    assets = {execution_asset(attempt.request) for attempt in attempts}
+    if len(assets) != 1:
+        return _result(OperationalState.HALTED, reason="mixed execution asset contracts")
+
     earliest = min(item.committed_at for item in attempts)
     if snapshot.history_start > earliest:
         return _result(OperationalState.UNRESOLVED, reason="broker history does not cover attempts")
@@ -231,7 +237,7 @@ def reconcile(
     # Replacement filled_qty is a cumulative order-chain observation.  Each
     # successor must retain at least its predecessor cumulative fill; summing
     # both order rows would count executions twice.
-    expected = Decimal(0)
+    expected = Fraction(0)
     for order in linked.values():
         if order.replaces is not None:
             predecessor = linked[order.replaces]
@@ -243,7 +249,9 @@ def reconcile(
                 )
         if order.replaced_by is None:
             expected += (
-                order.filled_quantity if order.side is OrderSide.BUY else -order.filled_quantity
+                Fraction(order.filled_quantity)
+                if order.side is OrderSide.BUY
+                else -Fraction(order.filled_quantity)
             )
     position = next(
         (row for row in snapshot.positions if row.instrument == attempts[0].request.instrument),
@@ -261,7 +269,7 @@ def reconcile(
             "broker position conflicts with linked fills",
             linked_ids,
         )
-    if actual != actual.to_integral_value():
+    if assets == {ExecutionAsset.US_EQUITY} and actual != actual.to_integral_value():
         return _result(OperationalState.HALTED, actual, "fractional broker residue", linked_ids)
 
     outstanding = [

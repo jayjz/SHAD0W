@@ -56,9 +56,42 @@ These are explicit engineering assumptions, not observed fees or profit forecast
 Existing fixed-quantity execution economics prices resolved fills and cannot
 represent this pre-entry signal-distance hurdle; it remains unchanged.
 
+## Typed execution and reconciliation foundations
+
+`BtcSubmitRequest` is an explicit BTC spot subtype; the equity SubmitRequest
+contract is unchanged. BTC supports positive fractional Decimal BTC quantity,
+PAPER MARKET/GTC, BUY or a risk-authorized linked SELL, without extended hours.
+The adapter rereads BTC asset evidence before POST: active/tradable/fractionable,
+minimum order size, minimum trade increment, and price increment must be present.
+Size must satisfy both the absolute increment grid and the minimum-offset grid,
+and the provider's documented nine-place precision. Disagreement rejects; there
+is no upward rounding. Price increment is recorded, not used as a MARKET limit.
+These checks do not substitute for risk or commit-before-send authority.
+
+Official references checked during implementation:
+[crypto trading](https://docs.alpaca.markets/us/docs/crypto-trading),
+[quantity constraints](https://docs.alpaca.markets/us/docs/crypto-trading-1), and
+[crypto orders](https://docs.alpaca.markets/us/docs/crypto-orders).
+No documentation sample minimum or increment is installed as trading authority.
+Tests use synthetic asset observations and fake transport only.
+
+The existing reducer distinguishes typed BTC attempts from equity attempts.
+BTC linked cumulative fills must equal broker exposure exactly; arithmetic uses
+exact rational quantities to avoid caller Decimal-context rounding. Fractional
+equity residue still HALTs. Empty complete initial inventory is FLAT; outstanding
+entry/exit is ENTRY_PENDING/EXIT_PENDING; linked fractional exposure is HOLDING;
+a complete linked exit and zero exposure is FLAT. Incomplete history or an
+uncertain attempt without broker order evidence is UNRESOLVED. Missing lookup
+and empty history never erase an attempt. Unlinked/conflicting activity HALTs.
+BTCUSD is normalized to BTC/USD only with explicit provider crypto asset class.
+Existing request and asset serialization is unchanged; new subtypes have distinct
+codec tags.
+
 ## Composition status
 
-This first checkpoint supplies pure features, strategy, and high-water
-reconstruction only. It creates no authorization or broker submission and has no
-BTC PAPER CLI. Durable lifecycle state and an independent BTC risk boundary are
-required before an executable application can consume these proposals.
+There is no BTC PAPER CLI or BTC dispatcher. The equity v4 journal embeds the
+existing equity RiskDecision and clock in each attempt; it does not yet persist
+BTC risk evidence or completed-close/high-water lifecycle history. The reducer
+tests use typed synthetic attempts, not an equity decision as BTC authority.
+The adapter's submit method remains a transport seam requiring a guarded caller.
+No external PAPER order was sent during implementation.

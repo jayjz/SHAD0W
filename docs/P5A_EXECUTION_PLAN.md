@@ -198,5 +198,6 @@ unresolved state blocks further activation. No live-capital gate is implied.
 ## Assigned BTC trend foundation
 
 The [BTC trend contract](BTC_TREND_PAPER_CONTRACT.md) records the separately
-authorized PAPER-only BTC slice. Pure strategy/features now exist; this does not
-complete P5A.6 or recovery acceptance. Live capital remains unsupported.
+authorized PAPER-only BTC slice. Pure strategy/features, typed MARKET/GTC
+transport and fractional reconciliation now exist; this does not complete
+P5A.6 or recovery acceptance. Live capital remains unsupported.

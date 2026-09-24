@@ -323,3 +323,10 @@ Prove identical recorded inputs reproduce lifecycle/risk projections. Keep P2A/P
 regressions and all canonical checks passing. CI has no trading credentials and
 must never connect to broker endpoints. Implementation tickets and operator gates
 are defined in the [execution plan](P5A_EXECUTION_PLAN.md).
+
+## Separately assigned BTC spot PAPER foundation
+
+The [BTC contract](BTC_TREND_PAPER_CONTRACT.md) adds an explicit BTC request subtype,
+current provider quantity constraints and fractional reconciliation. The equity
+MARKET/DAY contract above remains unchanged. The BTC transport seam alone grants
+no risk authority and is not yet composed into a BTC application.

@@ -38,6 +38,7 @@ from shadow.execution.broker import (
     SubmitRequest,
     TradeUpdate,
 )
+from shadow.execution.crypto import BtcBrokerAsset, BtcSubmitRequest
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 
 PAPER_TRADING_ORIGIN = "https://paper-api.alpaca.markets"
@@ -237,6 +238,13 @@ class AlpacaPaperBroker:
             self._evidence(reference, received, received), category, f"HTTP {response.status}"
         )
 
+    @staticmethod
+    def _instrument(payload: dict[str, object]) -> Instrument:
+        symbol = payload["symbol"]
+        if payload.get("asset_class") == "crypto" and symbol in ("BTCUSD", "BTC/USD"):
+            return Instrument("BTC/USD")
+        return Instrument(str(symbol))
+
     def _order(self, payload: dict[str, object], received: datetime, reference: str) -> BrokerOrder:
         try:
             raw_status = payload["status"]
@@ -249,7 +257,7 @@ class AlpacaPaperBroker:
             side = OrderSide(str(payload["side"]))
             order_type = OrderType(str(payload.get("type", payload.get("order_type"))))
             tif = TimeInForce(str(payload["time_in_force"]))
-            instrument = Instrument(str(payload["symbol"]))
+            instrument = self._instrument(payload)
             order_id = str(payload["id"])
             client = payload.get("client_order_id")
             client_id = None if client is None else str(client)
@@ -392,6 +400,37 @@ class AlpacaPaperBroker:
                 "malformed PAPER asset response",
             )
 
+    def read_btc_asset(self) -> BtcBrokerAsset | BrokerError:
+        response, received = self._call("GET", "/v2/assets/BTC%2FUSD")
+        if response.status != 200:
+            return self._error(response, received, "btc-asset")
+        try:
+            payload = _object(response.body)
+            if payload.get("symbol") != "BTC/USD" or payload.get("class") != "crypto":
+                raise AlpacaPaperError("BTC crypto asset required")
+            if type(payload.get("fractionable")) is not bool:
+                raise AlpacaPaperError("fractionable evidence required")
+            return BtcBrokerAsset(
+                self._evidence(
+                    _request_id(response.headers) or "alpaca:btc-asset", received, received
+                ),
+                Instrument("BTC/USD"),
+                Eligibility.INELIGIBLE,
+                Eligibility.ELIGIBLE
+                if payload.get("tradable") is True and payload.get("status") == "active"
+                else Eligibility.INELIGIBLE,
+                _decimal(payload["min_order_size"], positive=True),
+                _decimal(payload["min_trade_increment"], positive=True),
+                _decimal(payload["price_increment"], positive=True),
+                payload["fractionable"] is True,
+            )
+        except (KeyError, ValueError, AlpacaPaperError):
+            return BrokerError(
+                self._evidence("alpaca:btc-asset:malformed", received, received),
+                ErrorCategory.MALFORMED,
+                "malformed current BTC asset constraints",
+            )
+
     def read_snapshot(self) -> BrokerSnapshot | BrokerError:
         positions_response, received = self._call("GET", "/v2/positions")
         if positions_response.status != 200:
@@ -430,7 +469,7 @@ class AlpacaPaperBroker:
                     positions.append(
                         BrokerPosition(
                             evidence,
-                            Instrument(str(row["symbol"])),
+                            self._instrument(row),
                             _decimal(row["qty"], positive=True),
                         )
                     )
@@ -497,7 +536,7 @@ class AlpacaPaperBroker:
                 positions.append(
                     BrokerPosition(
                         self._evidence(position_ref, cut, cut),
-                        Instrument(str(row["symbol"])),
+                        self._instrument(row),
                         _decimal(row["qty"], positive=True),
                     )
                 )
@@ -641,24 +680,41 @@ class AlpacaPaperBroker:
         )
 
     def submit(self, request: SubmitRequest) -> SubmissionResult:
-        if (
-            request.account_id != self._account_id
-            or request.operational_scope != self._scope
-            or request.target is not OrderTarget.PAPER
-            or request.instrument != Instrument("SPY")
-            or request.side is not OrderSide.BUY
-            or request.quantity != Decimal(1)
-            or request.order_type is not OrderType.MARKET
-            or request.time_in_force is not TimeInForce.DAY
-            or request.extended_hours is not False
-        ):
+        common = (
+            request.account_id == self._account_id
+            and request.operational_scope == self._scope
+            and request.target is OrderTarget.PAPER
+            and request.order_type is OrderType.MARKET
+            and request.extended_hours is False
+        )
+        if isinstance(request, BtcSubmitRequest):
+            request.__post_init__()
+            if not common:
+                raise AlpacaPaperError("BTC request binding mismatch")
+            supported = (
+                request.instrument == Instrument("BTC/USD")
+                and request.time_in_force is TimeInForce.GTC
+            )
+            asset = self.read_btc_asset()
+            if not isinstance(asset, BtcBrokerAsset) or not asset.accepts_quantity(
+                request.quantity
+            ):
+                raise AlpacaPaperError("BTC quantity lacks valid current asset evidence")
+        else:
+            supported = (
+                request.instrument == Instrument("SPY")
+                and request.side is OrderSide.BUY
+                and request.quantity == Decimal(1)
+                and request.time_in_force is TimeInForce.DAY
+            )
+        if not common or not supported:
             raise AlpacaPaperError("request is outside the supported SPY PAPER BUY canary")
         payload = {
             "symbol": request.instrument.identifier,
-            "qty": "1",
+            "qty": str(request.quantity) if isinstance(request, BtcSubmitRequest) else "1",
             "side": request.side.value,
             "type": "market",
-            "time_in_force": "day",
+            "time_in_force": request.time_in_force.value,
             "extended_hours": False,
             "client_order_id": request.client_id,
         }
