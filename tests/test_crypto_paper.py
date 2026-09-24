@@ -18,6 +18,8 @@ from shadow.application.crypto_paper import (
     HistoricalSource,
     LiveSource,
     _direct_live,
+    _relay_live,
+    _validate_market_data_relay,
 )
 from shadow.domain.crypto_market import CryptoQuote, CryptoTrade, TakerSide, UtcNanoseconds
 from shadow.domain.market import AvailabilitySemantics, Provenance
@@ -284,6 +286,57 @@ def test_direct_live_duration_timeout_closes_socket_cleanly() -> None:
     assert list(source) == []
     assert socket.closed
     assert context.exited
+
+
+def test_relay_live_sends_no_alpaca_auth_and_uses_existing_trade_quote_normalization() -> None:
+    socket = _DirectSocket(
+        [
+            '[{"T":"subscription","trades":["BTC/USD"],"quotes":["BTC/USD"],"bars":[]}]',
+            json.dumps(
+                [
+                    {
+                        "T": "q",
+                        "S": "BTC/USD",
+                        "t": "2026-09-24T00:00:00Z",
+                        "bp": 100,
+                        "ap": 101,
+                        "bs": 1,
+                        "as": 1,
+                    }
+                ]
+            ),
+        ]
+    )
+    context = _DirectContext(socket)
+    source = _relay_live("ws://127.0.0.1:8766", 1, connect=_direct_connect(context))
+
+    event = next(source)
+
+    assert isinstance(event, CryptoQuote)
+    assert event.provenance.source == "alpaca:crypto:us"
+    assert [json.loads(message) for message in socket.sent] == [
+        {"action": "subscribe", "trades": ["BTC/USD"], "quotes": ["BTC/USD"]}
+    ]
+    source.close()
+    assert socket.closed and context.exited
+
+
+def test_relay_live_rejects_control_frames_and_unavailable_endpoints_without_direct_fallback() -> (
+    None
+):
+    with pytest.raises(Exception, match="market-data relay"):
+        _validate_market_data_relay("wss://stream.data.alpaca.markets/v1beta3/crypto/us")
+
+    socket = _DirectSocket(
+        [
+            '[{"T":"subscription","trades":["BTC/USD"],"quotes":["BTC/USD"],"bars":[]}]',
+            '[{"T":"relay_health","upstream_state":"reconnecting"}]',
+        ]
+    )
+    source = _relay_live("ws://localhost:8766", 1, connect=_direct_connect(_DirectContext(socket)))
+    with pytest.raises(Exception, match="control or unsupported"):
+        next(source)
+    assert [json.loads(message)["action"] for message in socket.sent] == ["subscribe"]
 
 
 def test_historical_context_cannot_trigger_before_wholly_live_interval(

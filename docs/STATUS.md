@@ -55,8 +55,10 @@ implementation claim.
 - **P4A live shadow:** Alpaca IEX/SIP market-data observation, deterministic JSONL
   capture/replay, and observational candidates evaluated with `PositionState.FLAT`.
   It neither infers broker holdings nor creates lifecycle-backed exits.
-- **Local Alpaca relay:** localhost-only market-data fanout; it has no trading or
-  account authority.
+- **Local Alpaca relays:** localhost-only market-data fanout with no trading or
+  account authority. The IEX relay remains separate from the crypto relay;
+  `shadow-crypto-feed-relay` is the one-owner BTC/USD crypto stream relay on
+  `127.0.0.1:8766`, with bounded downstream fanout and fail-closed reconnects.
 - **Warm start:** a verified stopped capture can seed the trailing valid completed
   bars needed for a feature window. Historical seeds are not live-actionable bars;
   the first fresh live bar remains the only candidate trigger.

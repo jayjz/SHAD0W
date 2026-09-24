@@ -35,6 +35,7 @@ Crypto C0 values and the planned market-data-only C1 lane are bounded by
 - Document and test behavior with the change. As each invariant becomes executable, add focused regression or property tests.
 - Experiments require immutable data identity, configuration, code revision, seed where applicable, and recorded limitations. Never silently change strategy logic, parameters, or evaluation configuration.
 - No live-capital trading or live trading endpoint support is permitted. P5A paper integration is bounded by the explicitly assigned follow-up slice; P5A.2A adds only durable identity, local ownership, and journal metadata. Preserve the separate P4A market-data-only command.
+- When a bounded localhost Alpaca market-data relay is configured, consumers must not silently open a second provider WebSocket; relay use never grants broker, order, or risk authority.
 - Distinguish environment/dependency failures from product failures in reports and commits.
 
 ## Git and verification

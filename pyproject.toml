@@ -18,6 +18,7 @@ shadow-paper-prepare = "shadow.application.paper_preparation:main"
 shadow-paper-canary = "shadow.application.paper_canary:main"
 shadow-crypto-capture = "shadow.application.crypto_capture:main"
 shadow-crypto-paper = "shadow.application.crypto_paper:main"
+shadow-crypto-feed-relay = "shadow.operations.alpaca_crypto_feed_relay:main"
 
 [dependency-groups]
 dev = [

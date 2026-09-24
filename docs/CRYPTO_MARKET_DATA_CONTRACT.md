@@ -212,6 +212,13 @@ foundation. This does not add order authority to C1 capture. A bounded BTC
 application and multi-day raw-trade warm-start remain absent; the BTC contract
 records execution-event/fee and durable lifecycle dependencies.
 
+When multiple local processes need Alpaca crypto data, the bounded
+`shadow-crypto-feed-relay` may be the sole WebSocket owner. Its fixed
+localhost-only protocol always owns BTC/USD `bars` and may add fixed BTC/USD
+`trades`/`quotes` only for the existing SHAD0W trade-built PAPER source. It does
+not change C1 capture's BTC/USD-plus-ETH/USD trade/quote/orderbook contract,
+does not synthesize data, and does not grant any execution authority.
+
 ## BTC application historical context
 
 The bounded BTC application may retrieve raw `crypto/us` BTC/USD trades through

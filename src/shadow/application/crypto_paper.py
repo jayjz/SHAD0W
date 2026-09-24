@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from shadow.adapters.alpaca.btc_history import historical_trades
 from shadow.adapters.alpaca.crypto_normalize import normalize
@@ -735,6 +736,111 @@ def _direct_live(
     return _DirectLive(credentials, duration_seconds, connect)
 
 
+def _validate_market_data_relay(url: str) -> str:
+    """Accept only the fixed local crypto relay origins; no provider fallback exists."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise PaperApplicationError(
+            "market-data relay must use a valid fixed localhost port"
+        ) from error
+    if (
+        parsed.scheme != "ws"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or port != 8766
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise PaperApplicationError(
+            "market-data relay must be ws://127.0.0.1:8766 or ws://localhost:8766"
+        )
+    return url
+
+
+class _RelayLive(_DirectLive):
+    """BTC trade/quote view of the fixed local relay, with no Alpaca authentication."""
+
+    def __init__(
+        self, relay_url: str, duration_seconds: float, connect: Callable[..., Any]
+    ) -> None:
+        # The superclass owns bounded synchronous iteration, frame decoding,
+        # receipt evidence, filtering, and deterministic socket shutdown.
+        super().__init__(CryptoDataCredentials("relay", "relay"), duration_seconds, connect)
+        self.relay_url = _validate_market_data_relay(relay_url)
+
+    def _open(self) -> None:
+        self._deadline = time.monotonic() + self.duration_seconds
+        self._loop = asyncio.new_event_loop()
+        try:
+            self._context = self._connect(
+                self.relay_url,
+                proxy=None,
+                max_size=1_048_576,
+                max_queue=1,
+                open_timeout=min(5, self.duration_seconds),
+            )
+            self._socket = self._loop.run_until_complete(self._context.__aenter__())
+            self._loop.run_until_complete(
+                self._socket.send(
+                    json.dumps(
+                        {"action": "subscribe", "trades": ["BTC/USD"], "quotes": ["BTC/USD"]}
+                    )
+                )
+            )
+            acknowledgement = self._protocol_frame()
+            expected = [
+                {
+                    "T": "subscription",
+                    "trades": ["BTC/USD"],
+                    "quotes": ["BTC/USD"],
+                    "bars": [],
+                }
+            ]
+            if acknowledgement != expected:
+                raise PaperApplicationError("local crypto relay subscription rejected")
+        except BaseException:
+            self.close()
+            raise
+
+    def __next__(self) -> CryptoTrade | CryptoQuote:
+        if self._closed:
+            raise StopIteration
+        if self._loop is None:
+            self._open()
+        while True:
+            if self._pending:
+                return self._pending.popleft()
+            raw = self._receive()
+            if raw is None:
+                raise StopIteration
+            received = UtcNanoseconds(time.time_ns())
+            for frame in decode_frame(raw):
+                if frame.get("T") not in ("t", "q"):
+                    raise PaperApplicationError(
+                        "local crypto relay emitted a control or unsupported frame"
+                    )
+                event = normalize(frame, received_at=received).event
+                if event.instrument == BTC:
+                    assert isinstance(event, (CryptoTrade, CryptoQuote))
+                    self._pending.append(event)
+
+
+def _relay_live(
+    relay_url: str, duration_seconds: float, *, connect: Callable[..., Any] | None = None
+) -> _RelayLive:
+    if duration_seconds <= 0:
+        raise PaperApplicationError("positive experiment duration required")
+    if connect is None:
+        from websockets.asyncio.client import connect as websocket_connect
+
+        connect = websocket_connect
+    return _RelayLive(relay_url, duration_seconds, connect)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="bounded SHAD0W BTC PAPER experiment")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -756,6 +862,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cash-buffer", required=True, type=Decimal)
     parser.add_argument("--trading-enabled", action="store_true")
     parser.add_argument("--kill-switch", action="store_true")
+    parser.add_argument(
+        "--market-data-relay",
+        metavar="WS_URL",
+        help=(
+            "use only ws://127.0.0.1:8766 or ws://localhost:8766 for BTC live data; "
+            "it never falls back to Alpaca directly"
+        ),
+    )
     return parser
 
 
@@ -828,9 +942,14 @@ def main() -> int:
                 payload = runner.preflight().payload()
             else:
                 data_credentials = CryptoDataCredentials.from_environment(os.environ)
+                live_source = (
+                    (lambda duration: _relay_live(args.market_data_relay, duration))
+                    if args.market_data_relay is not None
+                    else (lambda duration: _direct_live(data_credentials, duration))
+                )
                 payload = runner.experiment(
                     _historical_source(data_credentials, args.duration_seconds),
-                    lambda duration: _direct_live(data_credentials, duration),
+                    live_source,
                     args.duration_seconds,
                 ).payload()
             args.experiment_evidence_path.parent.mkdir(parents=True, exist_ok=True)

@@ -148,3 +148,19 @@ durable authority, one-use dispatch, normalized net inventory and reconciliation
 The adapter calls a local final guard immediately before POST. Broker fee
 linkage/finality and retention remain explicit unresolved provider limitations;
 no BTC application loop or real-provider restart acceptance is claimed.
+
+## Shared Alpaca crypto market-data relay
+
+`shadow.operations.alpaca_crypto_feed_relay` is a separate localhost-only
+market-data process for the documented Alpaca `crypto/us` WebSocket. It has one
+upstream owner and binds `ws://127.0.0.1:8766`; it has no broker, account,
+order, strategy, or risk import. It always explicitly owns BTC/USD minute bars
+for the durable LIGHTLIGHT consumer. When SHAD0W's existing BTC PAPER source
+connects locally it may add only its fixed BTC/USD trades and quotes, preserving
+that source's established trade-built interval semantics. Consumers never send
+Alpaca credentials and never fall back upstream when relay mode is selected.
+
+The relay forwards allowed provider event objects without fabricating bars or
+rewriting provider timestamps. Historical REST recovery remains a separate
+read-only path. A relay socket loss closes downstream consumers as explicit
+market-data loss; it does not alter broker or paper-trading authority.
