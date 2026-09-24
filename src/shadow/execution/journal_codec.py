@@ -45,6 +45,11 @@ from shadow.execution.broker import (
     UpdateKind,
 )
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount, BtcSubmitRequest
+from shadow.execution.crypto_accounting import (
+    CryptoActivityEvidence,
+    CryptoFeeActivity,
+    CryptoInventoryEffect,
+)
 from shadow.features import (
     FeatureInput,
     FeatureName,
@@ -176,6 +181,9 @@ _ENUM_BY_NAME = {item.__name__: item for item in _ENUMS}
 _DATACLASSES: tuple[type[Any], ...] = (
     Bar,
     BarInterval,
+    CryptoActivityEvidence,
+    CryptoFeeActivity,
+    CryptoInventoryEffect,
     BtcBrokerAsset,
     BtcCashAccount,
     BtcRiskEvaluation,

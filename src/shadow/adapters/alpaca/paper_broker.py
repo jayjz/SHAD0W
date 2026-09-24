@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
+from shadow.adapters.alpaca.crypto_activities import collect_activity_rows, translate_activities
 from shadow.domain import Instrument
 from shadow.execution.broker import (
     BrokerAccount,
@@ -39,6 +40,7 @@ from shadow.execution.broker import (
     TradeUpdate,
 )
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount, BtcSubmitRequest
+from shadow.execution.crypto_accounting import CryptoActivityEvidence
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 
 PAPER_TRADING_ORIGIN = "https://paper-api.alpaca.markets"
@@ -674,6 +676,45 @@ class AlpacaPaperBroker:
         ) as exc:
             return BrokerError(
                 self._evidence("alpaca:history:malformed", datetime.now(UTC), datetime.now(UTC)),
+                ErrorCategory.MALFORMED,
+                str(exc),
+            )
+
+    def read_btc_activities(
+        self,
+        *,
+        history_start: datetime,
+        history_end: datetime,
+        max_pages: int = 20,
+    ) -> CryptoActivityEvidence | BrokerError:
+        """Sequential account-bound GETs; exhaustion is not historical finality."""
+        account = self.read_btc_account()
+        if isinstance(account, BrokerError):
+            return account
+
+        def read(path: str) -> tuple[bytes, datetime]:
+            response, received = self._call("GET", path)
+            if response.status != 200:
+                raise AlpacaPaperError(f"activity read HTTP {response.status}")
+            return response.body, received
+
+        try:
+            rows, received = collect_activity_rows(
+                read,
+                history_start=history_start,
+                history_end=history_end,
+                max_pages=max_pages,
+            )
+            return translate_activities(
+                rows,
+                evidence=self._evidence("alpaca:activities", received, received),
+                history_start=history_start,
+                history_end=history_end,
+            )
+        except (ValueError, TypeError, KeyError, OSError, AlpacaPaperError) as exc:
+            now = datetime.now(UTC)
+            return BrokerError(
+                self._evidence("alpaca:activities:unusable", now, now),
                 ErrorCategory.MALFORMED,
                 str(exc),
             )

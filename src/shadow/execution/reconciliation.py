@@ -14,6 +14,7 @@ from fractions import Fraction
 
 from shadow.execution.broker import BrokerOrder, BrokerSnapshot, OrderStatus
 from shadow.execution.crypto import ExecutionAsset, execution_asset
+from shadow.execution.crypto_accounting import CryptoActivityEvidence, inventory_effects
 from shadow.execution.journal import CommittedAttempt
 from shadow.risk.models import OrderSide
 
@@ -73,6 +74,8 @@ def reconcile(
     attempts: tuple[CommittedAttempt, ...],
     snapshot: BrokerSnapshot,
     lookup_orders: tuple[BrokerOrder, ...] = (),
+    crypto_evidence: CryptoActivityEvidence | None = None,
+    require_crypto_evidence: bool = False,
 ) -> Reconciliation:
     """Reduce journal attempts and one authoritative broker cut.
 
@@ -119,9 +122,25 @@ def reconcile(
         if prior is None:
             orders[order.order_id] = order
 
+    if crypto_evidence is not None:
+        if (
+            crypto_evidence.evidence.account_id,
+            crypto_evidence.evidence.operational_scope,
+        ) != binding:
+            return _result(OperationalState.HALTED, reason="activity binding conflict")
+        if crypto_evidence.unsupported:
+            return _result(OperationalState.HALTED, reason="unsupported broker activity")
     if not attempts:
+        if crypto_evidence is not None and (crypto_evidence.executions or crypto_evidence.fees):
+            return _result(OperationalState.HALTED, reason="unlinked broker activity")
         if snapshot.positions or orders:
             return _result(OperationalState.HALTED, reason="unlinked broker activity")
+        if require_crypto_evidence and (
+            crypto_evidence is None
+            or not crypto_evidence.query_exhausted
+            or not crypto_evidence.history_verified
+        ):
+            return _result(OperationalState.UNRESOLVED, reason="activity history unproven")
         return _result(OperationalState.FLAT)
     if len({attempt.request.instrument for attempt in attempts}) != 1:
         return _result(OperationalState.HALTED, reason="multiple journal instruments")
@@ -253,6 +272,37 @@ def reconcile(
                 if order.side is OrderSide.BUY
                 else -Fraction(order.filled_quantity)
             )
+    if assets == {ExecutionAsset.BTC_SPOT} and (
+        require_crypto_evidence or crypto_evidence is not None
+    ):
+        if crypto_evidence is None:
+            return _result(OperationalState.UNRESOLVED, reason="BTC activity evidence missing")
+        if (
+            crypto_evidence.history_start > earliest
+            or crypto_evidence.history_end < snapshot.history_end
+        ):
+            return _result(OperationalState.UNRESOLVED, reason="BTC activity history truncated")
+        if crypto_evidence.evidence.availability_time > snapshot.evidence.availability_time:
+            return _result(OperationalState.UNRESOLVED, reason="activities newer than position cut")
+        if any(fill.order_id not in linked for fill in crypto_evidence.executions):
+            return _result(OperationalState.HALTED, reason="unlinked broker execution")
+        try:
+            effects = inventory_effects(crypto_evidence)
+        except ValueError as exc:
+            return _result(OperationalState.HALTED, reason=str(exc))
+        except LookupError as exc:
+            return _result(OperationalState.UNRESOLVED, reason=str(exc))
+        if any(order.replaces or order.replaced_by for order in linked.values()):
+            return _result(OperationalState.HALTED, reason="BTC replacement accounting unsupported")
+        totals = dict.fromkeys(linked, Fraction(0))
+        for effect in effects:
+            fill = effect.execution
+            if fill.side != linked[fill.order_id].side:
+                return _result(OperationalState.HALTED, reason="execution side conflict")
+            totals[fill.order_id] += Fraction(fill.quantity)
+        if any(totals[key] != order.filled_quantity for key, order in linked.items()):
+            return _result(OperationalState.UNRESOLVED, reason="gross execution coverage mismatch")
+        expected = sum((Fraction(effect.net_btc) for effect in effects), Fraction(0))
     position = next(
         (row for row in snapshot.positions if row.instrument == attempts[0].request.instrument),
         None,
