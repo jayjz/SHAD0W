@@ -474,6 +474,15 @@ class ExecutionJournal:
                 "BEGIN SELECT RAISE(ABORT, 'BTC evidence is immutable'); END"
             )
 
+    @staticmethod
+    def _create_application_events_schema(
+        connection: sqlite3.Connection, *, if_not_exists: bool = False
+    ) -> None:
+        connection.execute(
+            "CREATE TABLE " + ("IF NOT EXISTS " if if_not_exists else "") + "application_events ("
+            "sequence INTEGER PRIMARY KEY, namespace TEXT NOT NULL, payload BLOB NOT NULL) STRICT"
+        )
+
     @classmethod
     def migrate_v4(
         cls, *, path: Path, owner: AccountOwner, account_id: str, operational_scope: str
@@ -511,10 +520,7 @@ class ExecutionJournal:
     def application_events(self, namespace: str) -> tuple[object, ...]:
         """Owned application evidence, separate from execution authority projections."""
         self.assert_held()
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS application_events ("
-            "sequence INTEGER PRIMARY KEY, namespace TEXT NOT NULL, payload BLOB NOT NULL) STRICT"
-        )
+        self._create_application_events_schema(self._connection, if_not_exists=True)
         return tuple(
             decode_canonical(bytes(row[0]))
             for row in self._connection.execute(
@@ -588,38 +594,16 @@ class ExecutionJournal:
             raise JournalError("journal integrity check failed")
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise JournalError("journal foreign key check failed")
-        expected_objects = {
-            ("table", "committed_attempts"),
-            ("table", "journal_metadata"),
-            ("table", "journal_halts"),
-            ("table", "journal_events"),
-            ("table", "source_opportunity_bindings"),
-            ("table", "terminal_admissions"),
-            ("trigger", "committed_attempts_transition_only"),
-            ("trigger", "journal_events_immutable_delete"),
-            ("trigger", "journal_events_immutable_update"),
-            ("trigger", "journal_metadata_immutable_delete"),
-            ("trigger", "journal_metadata_immutable_update"),
-            ("trigger", "source_opportunity_bindings_immutable_delete"),
-            ("trigger", "source_opportunity_bindings_immutable_update"),
-            ("trigger", "terminal_admissions_immutable_delete"),
-            ("trigger", "terminal_admissions_immutable_update"),
-        }
+        objects = ExecutionJournal._schema_objects(connection)
+        expected_objects = ExecutionJournal._expected_schema_objects(version=version)
+        valid_objects: tuple[dict[tuple[str, str], str], ...] = (expected_objects,)
         if version == JOURNAL_SCHEMA_VERSION:
-            expected_objects.update(
-                {
-                    ("table", "btc_events"),
-                    ("trigger", "btc_events_immutable_update"),
-                    ("trigger", "btc_events_immutable_delete"),
-                }
+            valid_objects += (
+                ExecutionJournal._expected_schema_objects(
+                    version=version, with_application_events=True
+                ),
             )
-        objects = set(
-            connection.execute(
-                "SELECT type, name FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
-            ).fetchall()
-        )
-        if objects != expected_objects:
+        if objects not in valid_objects:
             raise JournalError("unsupported or incompatible journal schema")
         rows = connection.execute(
             "SELECT journal_uuid, account_id, operational_scope, target, schema_version, "
@@ -643,6 +627,54 @@ class ExecutionJournal:
             codec_version=row[5],
             created_at=created_at,
         )
+
+    @staticmethod
+    def _schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+        rows = connection.execute(
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        if any(
+            not isinstance(object_type, str)
+            or not isinstance(name, str)
+            or not isinstance(statement, str)
+            for object_type, name, statement in rows
+        ):
+            raise JournalError("journal schema object is malformed")
+        return {
+            (object_type, name): " ".join(statement.split()).casefold()
+            for object_type, name, statement in rows
+        }
+
+    @classmethod
+    def _expected_schema_objects(
+        cls, *, version: str, with_application_events: bool = False
+    ) -> dict[tuple[str, str], str]:
+        if version not in {JOURNAL_SCHEMA_VERSION, PREVIOUS_JOURNAL_SCHEMA_VERSION}:
+            raise JournalError("unsupported journal schema version")
+        connection = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            cls._create_schema(
+                connection,
+                JournalIdentity(
+                    journal_uuid="12345678-1234-4678-9234-567812345678",
+                    account_id="schema-contract-account",
+                    operational_scope="schema-contract-scope",
+                    target=OrderTarget.PAPER,
+                    schema_version=version,
+                    codec_version=CODEC_VERSION,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+            )
+            if version == PREVIOUS_JOURNAL_SCHEMA_VERSION:
+                connection.execute("DROP TRIGGER btc_events_immutable_update")
+                connection.execute("DROP TRIGGER btc_events_immutable_delete")
+                connection.execute("DROP TABLE btc_events")
+            if with_application_events:
+                cls._create_application_events_schema(connection, if_not_exists=True)
+            return cls._schema_objects(connection)
+        finally:
+            connection.close()
 
     def assert_held(self) -> None:
         if self._closed:

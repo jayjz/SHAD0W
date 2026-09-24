@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shadow.adapters.alpaca.paper_identity import derive_paper_client_order_identity
+from shadow.application.btc_history import MarketEvidence
 from shadow.execution.btc_authority import (
     BtcAttempt,
     BtcRevalidation,
@@ -19,6 +20,7 @@ from shadow.execution.btc_journal import BtcJournal
 from shadow.execution.crypto_accounting import CryptoActivityEvidence
 from shadow.execution.journal import ExecutionJournal, JournalError
 from shadow.execution.ownership import AccountOwner
+from shadow.features.btc_trend import HOUR_NS
 from shadow.risk.btc import evaluate_btc_risk
 from tests.test_btc_risk import inputs
 from tests.test_paper_reconciliation import NOW
@@ -123,6 +125,46 @@ def test_commit_restart_counts_binding_and_spent_attempt(journal: ExecutionJourn
             recovered.configure(replace(recovered.config, run_id="restart-renamed"))
     finally:
         reopened.close()
+
+
+def test_market_evidence_journal_reopens_with_application_and_btc_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "journal.sqlite"
+    owner_path = tmp_path / "owner"
+    owner_path.mkdir()
+    market_path = tmp_path / "market.jsonl"
+    with AccountOwner.acquire(ownership_directory=owner_path, account_id="paper-account") as owner:
+        created = ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="scope",
+            created_at=NOW,
+        )
+        identity = created.identity
+        store, _attempt = ready(created)
+        market = MarketEvidence(market_path, created)
+        market.begin(start_ns=0, live_boundary_ns=74 * HOUR_NS)
+        anchors = created.application_events("market")
+        btc_events = created.btc_events()
+        assert anchors
+        assert btc_events
+        created.verify_projections()
+        created.close()
+
+        with ExecutionJournal.reopen(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="scope",
+        ) as reopened:
+            assert reopened.identity == identity
+            assert reopened.application_events("market") == anchors
+            assert reopened.btc_events() == btc_events
+            assert BtcJournal(reopened).config == store.config
+            assert MarketEvidence(market_path, reopened).events == market.events
+            reopened.verify_projections()
 
 
 def test_revision_conflict_halt_and_codec_replay(journal: ExecutionJournal) -> None:

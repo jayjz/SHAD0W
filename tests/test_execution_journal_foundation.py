@@ -382,6 +382,85 @@ def test_journal_rejects_existing_incompatible_database(tmp_path: Path) -> None:
             )
 
 
+def test_journal_rejects_unknown_schema_object(tmp_path: Path) -> None:
+    path = tmp_path / "journal.sqlite"
+    with _owner(tmp_path) as owner:
+        journal = ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        )
+        journal.close()
+        connection = sqlite3.connect(path)
+        connection.execute("CREATE TABLE unexpected_table (value TEXT NOT NULL) STRICT")
+        connection.commit()
+        connection.close()
+        with pytest.raises(JournalError, match="unsupported or incompatible journal schema"):
+            ExecutionJournal.reopen(
+                path=path,
+                owner=owner,
+                account_id="paper-account",
+                operational_scope="paper-scope",
+            )
+
+
+def test_journal_rejects_malformed_sanctioned_or_expected_schema_object(tmp_path: Path) -> None:
+    path = tmp_path / "journal.sqlite"
+    with _owner(tmp_path) as owner:
+        journal = ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        )
+        journal.close()
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "CREATE TABLE application_events ("
+            "sequence INTEGER PRIMARY KEY, namespace TEXT NOT NULL, payload TEXT NOT NULL) STRICT"
+        )
+        connection.commit()
+        connection.close()
+        with pytest.raises(JournalError, match="unsupported or incompatible journal schema"):
+            ExecutionJournal.reopen(
+                path=path,
+                owner=owner,
+                account_id="paper-account",
+                operational_scope="paper-scope",
+            )
+
+    path = tmp_path / "altered.sqlite"
+    owner_path = tmp_path / "altered-owner"
+    owner_path.mkdir()
+    with _owner(owner_path) as owner:
+        journal = ExecutionJournal.create(
+            path=path,
+            owner=owner,
+            account_id="paper-account",
+            operational_scope="paper-scope",
+            created_at=NOW,
+        )
+        journal.close()
+        connection = sqlite3.connect(path)
+        connection.execute("DROP TRIGGER journal_metadata_immutable_delete")
+        connection.execute(
+            "CREATE TRIGGER journal_metadata_immutable_delete BEFORE DELETE ON journal_metadata "
+            "BEGIN SELECT 1; END"
+        )
+        connection.commit()
+        connection.close()
+        with pytest.raises(JournalError, match="unsupported or incompatible journal schema"):
+            ExecutionJournal.reopen(
+                path=path,
+                owner=owner,
+                account_id="paper-account",
+                operational_scope="paper-scope",
+            )
+
+
 def test_failed_incompatible_reopen_does_not_poison_correct_journal_binding(tmp_path: Path) -> None:
     incompatible = tmp_path / "incompatible.sqlite"
     correct = tmp_path / "correct.sqlite"
