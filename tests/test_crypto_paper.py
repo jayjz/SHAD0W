@@ -1,15 +1,24 @@
 """Bounded BTC PAPER application composition, entirely with the existing fake broker."""
 
-from collections.abc import Iterable, Iterator
+import asyncio
+import json
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import TracebackType
 
 import pytest
 
+from shadow.adapters.alpaca.crypto_stream import CryptoDataCredentials
 from shadow.application.btc_history import HISTORICAL, LIVE, MarketEvidence
-from shadow.application.crypto_paper import BtcPaperExperiment, HistoricalSource, LiveSource
+from shadow.application.crypto_paper import (
+    BtcPaperExperiment,
+    HistoricalSource,
+    LiveSource,
+    _direct_live,
+)
 from shadow.domain.crypto_market import CryptoQuote, CryptoTrade, TakerSide, UtcNanoseconds
 from shadow.domain.market import AvailabilitySemantics, Provenance
 from shadow.execution.btc_journal import BtcJournal
@@ -60,6 +69,95 @@ class _Clock:
 
     def __call__(self) -> datetime:
         return self.value
+
+
+class _CloseTrackingLive(Iterator[CryptoTrade | CryptoQuote]):
+    """Injected source proving the experiment does not read beyond a terminal cut."""
+
+    def __init__(
+        self,
+        events: tuple[CryptoTrade | CryptoQuote, ...],
+        before_next: Callable[[int], None] | None = None,
+    ) -> None:
+        self.events = iter(events)
+        self.before_next = before_next
+        self.consumed: list[CryptoTrade | CryptoQuote] = []
+        self.closed = False
+
+    def __iter__(self) -> Iterator[CryptoTrade | CryptoQuote]:
+        return self
+
+    def __next__(self) -> CryptoTrade | CryptoQuote:
+        event = next(self.events)
+        if self.before_next is not None:
+            self.before_next(len(self.consumed))
+        self.consumed.append(event)
+        return event
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _DirectSocket:
+    def __init__(self, frames: list[str]) -> None:
+        self.frames = iter(frames)
+        self.receives = 0
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def recv(self) -> str:
+        self.receives += 1
+        try:
+            return next(self.frames)
+        except StopIteration:
+            await asyncio.Future[str]()
+            raise AssertionError("unreachable") from None
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _DirectContext:
+    def __init__(self, socket: _DirectSocket) -> None:
+        self.socket = socket
+        self.exited = False
+
+    async def __aenter__(self) -> _DirectSocket:
+        return self.socket
+
+    async def __aexit__(
+        self,
+        _type: type[BaseException] | None,
+        _value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.exited = True
+
+
+def _subscription_frame() -> str:
+    return json.dumps(
+        [
+            {
+                "T": "subscription",
+                "trades": ["BTC/USD", "ETH/USD"],
+                "quotes": ["BTC/USD", "ETH/USD"],
+                "orderbooks": ["BTC/USD", "ETH/USD"],
+                "bars": [],
+                "updatedBars": [],
+                "dailyBars": [],
+            }
+        ]
+    )
+
+
+def _direct_connect(context: _DirectContext) -> Callable[..., _DirectContext]:
+    def connect(*_args: object, **_kwargs: object) -> _DirectContext:
+        return context
+
+    return connect
 
 
 class _FreshFake(FakeBtcBroker):
@@ -119,6 +217,73 @@ def test_preflight_performs_no_post(journal: ExecutionJournal, tmp_path: Path) -
     assert broker.posts == 0
     assert status.broker_ready
     assert status.submission_budget == 1
+
+
+def test_direct_live_yields_each_decoded_event_before_receiving_the_next_frame() -> None:
+    socket = _DirectSocket(
+        [
+            '[{"T":"success","msg":"connected"}]',
+            '[{"T":"success","msg":"authenticated"}]',
+            _subscription_frame(),
+            json.dumps(
+                [
+                    {
+                        "T": "q",
+                        "S": "BTC/USD",
+                        "t": "2026-09-24T00:00:00Z",
+                        "bp": 100,
+                        "ap": 101,
+                        "bs": 1,
+                        "as": 1,
+                    }
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "T": "t",
+                        "S": "BTC/USD",
+                        "t": "2026-09-24T00:00:01Z",
+                        "i": 1,
+                        "p": 101,
+                        "s": 1,
+                        "tks": "B",
+                    }
+                ]
+            ),
+        ]
+    )
+    context = _DirectContext(socket)
+    source = _direct_live(
+        CryptoDataCredentials("key", "secret"), 1, connect=_direct_connect(context)
+    )
+
+    first = next(source)
+
+    assert isinstance(first, CryptoQuote)
+    assert socket.receives == 4
+    assert [json.loads(message)["action"] for message in socket.sent] == ["auth", "subscribe"]
+    source.close()
+    assert socket.closed
+    assert context.exited
+
+
+def test_direct_live_duration_timeout_closes_socket_cleanly() -> None:
+    socket = _DirectSocket(
+        [
+            '[{"T":"success","msg":"connected"}]',
+            '[{"T":"success","msg":"authenticated"}]',
+            _subscription_frame(),
+        ]
+    )
+    context = _DirectContext(socket)
+    source = _direct_live(
+        CryptoDataCredentials("key", "secret"), 0.001, connect=_direct_connect(context)
+    )
+
+    assert list(source) == []
+    assert socket.closed
+    assert context.exited
 
 
 def test_historical_context_cannot_trigger_before_wholly_live_interval(
@@ -200,6 +365,54 @@ def test_no_signal_after_fresh_live_interval_never_posts(
     result = runner.experiment(source, live_source, 1)
     assert result.stop_reason == "NO_SIGNAL"
     assert broker.posts == 0
+
+
+def test_actionable_live_interval_is_evaluated_before_future_event_is_consumed(
+    journal: ExecutionJournal, tmp_path: Path
+) -> None:
+    runner, broker, clock = _runner(journal, tmp_path)
+    boundary = (int(clock().timestamp() * 1_000_000_000) // HOUR_NS) * HOUR_NS
+    start = boundary - 74 * HOUR_NS
+
+    def historical(_start: int, _end: int) -> Iterator[tuple[CryptoTrade, ...]]:
+        yield tuple(
+            _trade(value, Decimal(200 - index), HISTORICAL, boundary)
+            for index, value in enumerate(range(start, boundary, HOUR_NS))
+        )
+
+    quote = CryptoQuote(
+        BTC,
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("1"),
+        Decimal("1"),
+        UtcNanoseconds(boundary + HOUR_NS + 1_000),
+        UtcNanoseconds(boundary + HOUR_NS + 1_000),
+        AvailabilitySemantics.SYSTEM_RECEIVED,
+        Provenance(LIVE, "UTC"),
+    )
+    closing_trade = _trade(boundary, Decimal("125"), LIVE, boundary)
+    actionable_boundary = _trade(
+        boundary + HOUR_NS, Decimal("124"), LIVE, boundary + HOUR_NS + 1_000
+    )
+    future_trade = _trade(boundary + 2 * HOUR_NS, Decimal("10000"), LIVE, boundary + 2 * HOUR_NS)
+
+    def advance_clock(index: int) -> None:
+        if index == 2:
+            clock.value = (
+                datetime.fromtimestamp((boundary + HOUR_NS) / 1_000_000_000, tz=UTC)
+                + datetime.resolution
+            )
+
+    live = _CloseTrackingLive(
+        (quote, closing_trade, actionable_boundary, future_trade), before_next=advance_clock
+    )
+    result = runner.experiment(historical, lambda _duration: live, 1)
+
+    assert result.stop_reason == "NO_SIGNAL"
+    assert broker.posts == 0
+    assert live.consumed == [quote, closing_trade, actionable_boundary]
+    assert live.closed
 
 
 def _rising_sources(

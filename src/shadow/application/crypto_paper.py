@@ -11,11 +11,13 @@ import asyncio
 import json
 import os
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from shadow.adapters.alpaca.btc_history import historical_trades
 from shadow.adapters.alpaca.crypto_normalize import normalize
@@ -485,83 +487,95 @@ class BtcPaperExperiment:
                 status="complete", stop_reason="SUBMISSION_BUDGET_SPENT", preflight=initial
             )
         self.warm_start(historical)
-        for event in live(duration_seconds):
-            if isinstance(event, CryptoQuote):
-                if event.instrument == BTC:
-                    self.quote = event
-                continue
-            if not isinstance(event, CryptoTrade) or event.instrument != BTC:
-                continue
-            previous_fresh = self.evidence.history.last_fresh_end
-            self.evidence.trades((event,))
-            if self.evidence.history.last_fresh_end is None or (
-                self.evidence.history.last_fresh_end == previous_fresh
-            ):
-                continue
-            features = self.config.features(self.evidence.history.intervals, utc_ns(self._clock()))
-            proposal = propose(self.config, features, now_ns=utc_ns(self._clock()), holding=False)
-            fresh = self.preflight()
-            if proposal is None:
-                return self._finish(status="complete", stop_reason="NO_SIGNAL", preflight=fresh)
-            if fresh.classification not in (
-                AuthorityClassification.EXPERIMENT_READY,
-                AuthorityClassification.PROOF_READY,
-            ):
-                return self._finish(
-                    status="complete", stop_reason="BLOCKED", preflight=fresh, proposal=proposal
+        events = live(duration_seconds)
+        try:
+            for event in events:
+                if isinstance(event, CryptoQuote):
+                    if event.instrument == BTC:
+                        self.quote = event
+                    continue
+                if not isinstance(event, CryptoTrade) or event.instrument != BTC:
+                    continue
+                previous_fresh = self.evidence.history.last_fresh_end
+                self.evidence.trades((event,))
+                if self.evidence.history.last_fresh_end is None or (
+                    self.evidence.history.last_fresh_end == previous_fresh
+                ):
+                    continue
+                features = self.config.features(
+                    self.evidence.history.intervals, utc_ns(self._clock())
                 )
-            evaluation = self._evaluate(proposal)
-            if evaluation is None or not evaluation.authorized:
+                proposal = propose(
+                    self.config, features, now_ns=utc_ns(self._clock()), holding=False
+                )
+                fresh = self.preflight()
+                if proposal is None:
+                    return self._finish(status="complete", stop_reason="NO_SIGNAL", preflight=fresh)
+                if fresh.classification not in (
+                    AuthorityClassification.EXPERIMENT_READY,
+                    AuthorityClassification.PROOF_READY,
+                ):
+                    return self._finish(
+                        status="complete", stop_reason="BLOCKED", preflight=fresh, proposal=proposal
+                    )
+                evaluation = self._evaluate(proposal)
+                if evaluation is None or not evaluation.authorized:
+                    return self._finish(
+                        status="complete",
+                        stop_reason="RISK_REJECTED",
+                        preflight=fresh,
+                        proposal=proposal,
+                        evaluation=evaluation,
+                    )
+                authority = (
+                    BtcDispatchAuthority.INITIAL_EXPERIMENT
+                    if fresh.classification is AuthorityClassification.EXPERIMENT_READY
+                    else BtcDispatchAuthority.PROOF
+                )
+                try:
+                    dispatcher = self._dispatcher()
+                    # Establish the dispatcher-owned recovery cut immediately before
+                    # dispatch.  Its execute path then repeats all fresh reads and
+                    # authority/risk checks before the durable commit and POST guard.
+                    dispatcher.recover()
+                    submission = dispatcher.execute(
+                        evaluation,
+                        dispatch_deadline=self._clock() + timedelta(seconds=10),
+                        expected_revision=self.store.revision,
+                        authority=authority,
+                    )
+                except DispatchHalted:
+                    return self._finish(
+                        status="complete",
+                        stop_reason="DISPATCH_BLOCKED",
+                        preflight=fresh,
+                        proposal=proposal,
+                        evaluation=evaluation,
+                    )
+                if not isinstance(submission, SubmissionResult):
+                    return self._finish(
+                        status="complete",
+                        stop_reason="RESTART_RECONCILIATION_ONLY",
+                        preflight=fresh,
+                        proposal=proposal,
+                        evaluation=evaluation,
+                    )
                 return self._finish(
                     status="complete",
-                    stop_reason="RISK_REJECTED",
+                    stop_reason="POST_ATTEMPT_OBSERVED",
                     preflight=fresh,
                     proposal=proposal,
                     evaluation=evaluation,
+                    submission=submission,
                 )
-            authority = (
-                BtcDispatchAuthority.INITIAL_EXPERIMENT
-                if fresh.classification is AuthorityClassification.EXPERIMENT_READY
-                else BtcDispatchAuthority.PROOF
-            )
-            try:
-                dispatcher = self._dispatcher()
-                # Establish the dispatcher-owned recovery cut immediately before
-                # dispatch.  Its execute path then repeats all fresh reads and
-                # authority/risk checks before the durable commit and POST guard.
-                dispatcher.recover()
-                submission = dispatcher.execute(
-                    evaluation,
-                    dispatch_deadline=self._clock() + timedelta(seconds=10),
-                    expected_revision=self.store.revision,
-                    authority=authority,
-                )
-            except DispatchHalted:
-                return self._finish(
-                    status="complete",
-                    stop_reason="DISPATCH_BLOCKED",
-                    preflight=fresh,
-                    proposal=proposal,
-                    evaluation=evaluation,
-                )
-            if not isinstance(submission, SubmissionResult):
-                return self._finish(
-                    status="complete",
-                    stop_reason="RESTART_RECONCILIATION_ONLY",
-                    preflight=fresh,
-                    proposal=proposal,
-                    evaluation=evaluation,
-                )
+            final = self.preflight()
             return self._finish(
-                status="complete",
-                stop_reason="POST_ATTEMPT_OBSERVED",
-                preflight=fresh,
-                proposal=proposal,
-                evaluation=evaluation,
-                submission=submission,
+                status="complete", stop_reason="LIVE_INTERVAL_TIMEOUT", preflight=final
             )
-        final = self.preflight()
-        return self._finish(status="complete", stop_reason="LIVE_INTERVAL_TIMEOUT", preflight=final)
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
 
 
 def _historical_source(
@@ -581,38 +595,144 @@ def _historical_source(
     return fetch
 
 
-async def _direct_live(
-    credentials: CryptoDataCredentials, duration_seconds: float
-) -> tuple[CryptoTrade | CryptoQuote, ...]:
-    """One finite direct ``crypto/us`` source; later relays implement ``LiveSource``."""
-    from websockets.asyncio.client import connect
+class _DirectLive(Iterator[CryptoTrade | CryptoQuote]):
+    """A closeable synchronous view of one direct Alpaca crypto WebSocket.
 
-    events: list[CryptoTrade | CryptoQuote] = []
-    async with connect(
-        ENDPOINT, proxy=None, max_size=1_048_576, max_queue=16, open_timeout=5
-    ) as socket:
-        if not is_success(decode_frame(await socket.recv()), "connected"):
-            raise PaperApplicationError("crypto stream connection rejected")
-        await socket.send(auth_request(credentials))
-        if not is_success(decode_frame(await socket.recv()), "authenticated"):
-            raise PaperApplicationError("crypto stream authentication rejected")
-        await socket.send(subscription_request())
-        if not subscription_is_exact(decode_frame(await socket.recv())):
-            raise PaperApplicationError("crypto stream subscription rejected")
-        deadline = time.monotonic() + duration_seconds
-        while (remaining := deadline - time.monotonic()) > 0:
-            try:
-                raw = await asyncio.wait_for(socket.recv(), timeout=remaining)
-            except TimeoutError:
-                break
+    The synchronous experiment drives this iterator one event at a time.  Its
+    private event loop retains the socket between ``next`` calls, so returning
+    from the experiment can close it immediately without a producer task or a
+    session-sized event buffer.
+    """
+
+    def __init__(
+        self,
+        credentials: CryptoDataCredentials,
+        duration_seconds: float,
+        connect: Callable[..., Any],
+    ) -> None:
+        self.credentials = credentials
+        self.duration_seconds = duration_seconds
+        self._connect = connect
+        self._deadline: float | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._context: Any | None = None
+        self._socket: Any | None = None
+        # This contains only decoded BTC events from the current provider frame;
+        # ``max_size`` bounds that frame to one MiB.
+        self._pending: deque[CryptoTrade | CryptoQuote] = deque()
+        self._closed = False
+
+    def __iter__(self) -> Iterator[CryptoTrade | CryptoQuote]:
+        return self
+
+    def _remaining(self) -> float:
+        assert self._deadline is not None
+        return self._deadline - time.monotonic()
+
+    def _receive(self) -> str | bytes | None:
+        if self._loop is None or self._socket is None:
+            raise PaperApplicationError("crypto stream is not connected")
+        remaining = self._remaining()
+        if remaining <= 0:
+            self.close()
+            return None
+        try:
+            raw = self._loop.run_until_complete(
+                asyncio.wait_for(self._socket.recv(), timeout=remaining)
+            )
+        except TimeoutError:
+            self.close()
+            return None
+        if not isinstance(raw, (str, bytes)):
+            raise PaperApplicationError("crypto stream returned invalid frame")
+        return raw
+
+    def _protocol_frame(self) -> list[dict[str, object]]:
+        raw = self._receive()
+        if raw is None:
+            raise PaperApplicationError("crypto stream deadline expired during setup")
+        return decode_frame(raw)
+
+    def _open(self) -> None:
+        self._deadline = time.monotonic() + self.duration_seconds
+        self._loop = asyncio.new_event_loop()
+        try:
+            self._context = self._connect(
+                ENDPOINT,
+                proxy=None,
+                max_size=1_048_576,
+                max_queue=1,
+                open_timeout=min(5, self.duration_seconds),
+            )
+            self._socket = self._loop.run_until_complete(self._context.__aenter__())
+            if not is_success(self._protocol_frame(), "connected"):
+                raise PaperApplicationError("crypto stream connection rejected")
+            self._loop.run_until_complete(self._socket.send(auth_request(self.credentials)))
+            if not is_success(self._protocol_frame(), "authenticated"):
+                raise PaperApplicationError("crypto stream authentication rejected")
+            self._loop.run_until_complete(self._socket.send(subscription_request()))
+            if not subscription_is_exact(self._protocol_frame()):
+                raise PaperApplicationError("crypto stream subscription rejected")
+        except BaseException:
+            self.close()
+            raise
+
+    def __next__(self) -> CryptoTrade | CryptoQuote:
+        if self._closed:
+            raise StopIteration
+        if self._loop is None:
+            self._open()
+        while True:
+            if self._pending:
+                return self._pending.popleft()
+            raw = self._receive()
+            if raw is None:
+                raise StopIteration
             received = UtcNanoseconds(time.time_ns())
             for frame in decode_frame(raw):
-                if frame.get("T") in ("t", "q"):
-                    event = normalize(frame, received_at=received).event
-                    if event.instrument == BTC:
-                        assert isinstance(event, (CryptoTrade, CryptoQuote))
-                        events.append(event)
-    return tuple(events)
+                if frame.get("T") not in ("t", "q"):
+                    continue
+                event = normalize(frame, received_at=received).event
+                if event.instrument == BTC:
+                    assert isinstance(event, (CryptoTrade, CryptoQuote))
+                    self._pending.append(event)
+
+    async def _shutdown(self) -> None:
+        try:
+            if self._socket is not None:
+                await self._socket.close()
+        finally:
+            if self._context is not None:
+                await self._context.__aexit__(None, None, None)
+
+    def close(self) -> None:
+        """Close the socket and private event loop; safe on every exit path."""
+        if self._closed:
+            return
+        self._closed = True
+        self._pending.clear()
+        if self._loop is None:
+            return
+        try:
+            self._loop.run_until_complete(self._shutdown())
+        finally:
+            self._loop.close()
+
+
+def _direct_live(
+    credentials: CryptoDataCredentials,
+    duration_seconds: float,
+    *,
+    connect: Callable[..., Any] | None = None,
+) -> _DirectLive:
+    """Return one bounded direct source; relays can implement ``LiveSource`` instead."""
+    if duration_seconds <= 0:
+        raise PaperApplicationError("positive experiment duration required")
+    if connect is None:
+        from websockets.asyncio.client import connect as websocket_connect
+
+        connect = websocket_connect
+    return _DirectLive(credentials, duration_seconds, connect)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -710,7 +830,7 @@ def main() -> int:
                 data_credentials = CryptoDataCredentials.from_environment(os.environ)
                 payload = runner.experiment(
                     _historical_source(data_credentials, args.duration_seconds),
-                    lambda duration: asyncio.run(_direct_live(data_credentials, duration)),
+                    lambda duration: _direct_live(data_credentials, duration),
                     args.duration_seconds,
                 ).payload()
             args.experiment_evidence_path.parent.mkdir(parents=True, exist_ok=True)
