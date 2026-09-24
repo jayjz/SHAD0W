@@ -39,7 +39,13 @@ class BtcRiskPolicy:
 
     @property
     def policy_id(self) -> str:
-        payload = {field.name: str(getattr(self, field.name)) for field in fields(self)}
+        payload = {}
+        for field in fields(self):
+            value = getattr(self, field.name)
+            text = format(value, "f") if isinstance(value, Decimal) else str(value)
+            if isinstance(value, Decimal) and "." in text:
+                text = text.rstrip("0").rstrip(".")
+            payload[field.name] = text
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 

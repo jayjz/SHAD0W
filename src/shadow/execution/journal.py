@@ -27,7 +27,8 @@ from shadow.features import FeatureSnapshot
 from shadow.risk.models import OrderIntent, OrderTarget, RiskDecision
 from shadow.strategies import Signal
 
-JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v4"
+JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v5"
+PREVIOUS_JOURNAL_SCHEMA_VERSION = "shadow.execution.journal.v4"
 T = TypeVar("T")
 
 
@@ -456,13 +457,94 @@ class ExecutionJournal:
                 BEGIN SELECT RAISE(ABORT, 'committed attempts are transition-only'); END
                 """
             )
+            ExecutionJournal._create_btc_schema(connection)
             connection.execute("COMMIT")
         except sqlite3.Error:
             connection.execute("ROLLBACK")
             raise
 
     @staticmethod
-    def _read_identity(connection: sqlite3.Connection) -> JournalIdentity:
+    def _create_btc_schema(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE TABLE btc_events (revision INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload BLOB NOT NULL) STRICT"
+        )
+        for operation in ("update", "delete"):
+            connection.execute(
+                f"CREATE TRIGGER btc_events_immutable_{operation} BEFORE {operation.upper()} ON btc_events "
+                "BEGIN SELECT RAISE(ABORT, 'BTC evidence is immutable'); END"
+            )
+
+    @classmethod
+    def migrate_v4(
+        cls, *, path: Path, owner: AccountOwner, account_id: str, operational_scope: str
+    ) -> None:
+        """Explicit additive v4 -> v5 transaction, preserving all existing rows."""
+        owner.assert_held(account_id=account_id)
+        candidate = _database_path(path, exists=True)
+        connection = _connect(candidate, create=False)
+        try:
+            identity = cls._read_identity(connection, version=PREVIOUS_JOURNAL_SCHEMA_VERSION)
+            if (identity.account_id, identity.operational_scope) != (account_id, operational_scope):
+                raise JournalError("migration binding mismatch")
+            owner.bind_journal_path(journal_path=candidate)
+            # Validate v4 projections before changing its schema.
+            cls(candidate, identity, connection, owner).verify_projections()
+            connection.execute("BEGIN IMMEDIATE")
+            cls._create_btc_schema(connection)
+            connection.execute("DROP TRIGGER journal_metadata_immutable_update")
+            connection.execute(
+                "UPDATE journal_metadata SET schema_version = ?", (JOURNAL_SCHEMA_VERSION,)
+            )
+            connection.execute(
+                "CREATE TRIGGER journal_metadata_immutable_update BEFORE UPDATE ON journal_metadata "
+                "BEGIN SELECT RAISE(ABORT, 'journal metadata is immutable'); END"
+            )
+            cls._read_identity(connection)
+            connection.execute("COMMIT")
+        except (sqlite3.Error, JournalError) as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise JournalError("explicit v4 migration failed") from exc
+        finally:
+            connection.close()
+
+    def btc_events(self) -> tuple[tuple[int, str, object], ...]:
+        self.assert_held()
+        try:
+            rows = self._connection.execute(
+                "SELECT revision, kind, payload FROM btc_events ORDER BY revision"
+            ).fetchall()
+            return tuple(
+                (revision, kind, decode_canonical(payload)) for revision, kind, payload in rows
+            )
+        except (sqlite3.Error, ValueError) as exc:
+            raise JournalError("BTC journal replay failed") from exc
+
+    def append_btc_event(self, *, expected_revision: int, kind: str, payload: object) -> int:
+        """Serialized compare-and-append; reducers validate transition semantics."""
+        self._transaction()
+        try:
+            actual = self._connection.execute(
+                "SELECT COALESCE(MAX(revision), 0) FROM btc_events"
+            ).fetchone()[0]
+            if type(actual) is not int:
+                raise JournalError("invalid BTC revision")
+            if actual != expected_revision:
+                raise JournalError("BTC journal revision conflict")
+            self._connection.execute(
+                "INSERT INTO btc_events VALUES (?, ?, ?)",
+                (actual + 1, kind, self._encoded(payload)),
+            )
+            self._commit()
+            return actual + 1
+        except (sqlite3.Error, JournalError) as exc:
+            self._rollback()
+            raise JournalError("BTC event commit failed") from exc
+
+    @staticmethod
+    def _read_identity(
+        connection: sqlite3.Connection, *, version: str = JOURNAL_SCHEMA_VERSION
+    ) -> JournalIdentity:
         integrity = connection.execute("PRAGMA integrity_check").fetchall()
         if integrity != [("ok",)]:
             raise JournalError("journal integrity check failed")
@@ -485,6 +567,14 @@ class ExecutionJournal:
             ("trigger", "terminal_admissions_immutable_delete"),
             ("trigger", "terminal_admissions_immutable_update"),
         }
+        if version == JOURNAL_SCHEMA_VERSION:
+            expected_objects.update(
+                {
+                    ("table", "btc_events"),
+                    ("trigger", "btc_events_immutable_update"),
+                    ("trigger", "btc_events_immutable_delete"),
+                }
+            )
         objects = set(
             connection.execute(
                 "SELECT type, name FROM sqlite_master "
@@ -500,7 +590,7 @@ class ExecutionJournal:
         if len(rows) != 1:
             raise JournalError("journal metadata is missing or ambiguous")
         row = rows[0]
-        if row[4] != JOURNAL_SCHEMA_VERSION or row[5] != CODEC_VERSION:
+        if row[4] != version or row[5] != CODEC_VERSION:
             raise JournalError("unsupported journal schema or codec version")
         try:
             created_at = datetime.fromisoformat(row[6])
@@ -789,6 +879,11 @@ class ExecutionJournal:
         ).fetchone()
         if counts != (len(bindings), len(admissions)):
             raise JournalError("journal projections have missing append-only events")
+
+        if self.identity.schema_version == JOURNAL_SCHEMA_VERSION:
+            from shadow.execution.btc_journal import BtcJournal
+
+            BtcJournal(self)
 
     def commit_attempt(
         self,

@@ -128,8 +128,10 @@ dataset lineage, instrument, completed-bar observation identity, strategy
 identity/version, strategy configuration ID, signal direction, and feature
 identity/version/window. The current encoding is `shadow.source-opportunity.v2`;
 v1 did not distinguish configuration or direction and is deliberately not reused.
-The matching durable journal schema is `shadow.execution.journal.v4`; a v3 journal
-is rejected rather than being reinterpreted under the v2 source-key semantics.
+The v2 source key was introduced with journal v4; v3 journals remain rejected.
+Journal v5 adds BTC append-only authority with an explicit, transactional v4→v5
+migration. Equity rows and v2 source-key semantics are preserved. See
+[BTC execution seam](BTC_EXECUTION_SEAM.md) for migration and authority details.
 Session IDs, reconnect counters, receipt times, and mutable display labels are
 excluded. The first
 feature/signal/intent binding under that key is immutable; a material variant is a

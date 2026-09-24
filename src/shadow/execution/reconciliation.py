@@ -13,6 +13,7 @@ from enum import StrEnum
 from fractions import Fraction
 
 from shadow.execution.broker import BrokerOrder, BrokerSnapshot, OrderStatus
+from shadow.execution.btc_authority import BtcAttempt
 from shadow.execution.crypto import ExecutionAsset, execution_asset
 from shadow.execution.crypto_accounting import CryptoActivityEvidence, inventory_effects
 from shadow.execution.journal import CommittedAttempt
@@ -71,7 +72,7 @@ def _result(
 
 def reconcile(
     *,
-    attempts: tuple[CommittedAttempt, ...],
+    attempts: tuple[CommittedAttempt | BtcAttempt, ...],
     snapshot: BrokerSnapshot,
     lookup_orders: tuple[BrokerOrder, ...] = (),
     crypto_evidence: CryptoActivityEvidence | None = None,
@@ -85,7 +86,7 @@ def reconcile(
     """
     if not isinstance(snapshot, BrokerSnapshot) or not isinstance(attempts, tuple):
         raise TypeError("typed snapshot and immutable attempts are required")
-    if not all(isinstance(item, CommittedAttempt) for item in attempts):
+    if not all(isinstance(item, (CommittedAttempt, BtcAttempt)) for item in attempts):
         raise TypeError("attempts must be committed journal evidence")
     if not isinstance(lookup_orders, tuple) or not all(
         isinstance(item, BrokerOrder) for item in lookup_orders

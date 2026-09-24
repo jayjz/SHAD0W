@@ -54,3 +54,32 @@ existing gross-fill fixtures and equity behavior. It is not executable BTC
 recovery authority. Guarded BTC composition must request strict activity evidence.
 The production Alpaca collector intentionally cannot produce verified fee/history
 coverage from the documented legacy API alone. This remains an activation blocker.
+
+## Durable authority
+
+Schema v5 adds one append-only `btc_events` table and immutable triggers to the
+same SQLite database. `ExecutionJournal.migrate_v4` explicitly validates v4,
+adds the table, and changes version atomically under account ownership. Existing
+rows, UUID and timestamps survive. Older versions reject; no delete/recreate
+migration exists. Old readers reject the new schema.
+
+Canonical BTC events bind a fixed run, source-market identity, strategy config,
+risk policy, code revision and positive ceilings. Attempt evidence contains the
+exact evaluation/proposal/request, causal intervals and quote, controls, account,
+asset, snapshot, activities, deadline and reconciliation revision. The event is
+the dispatch-start marker. Results and subsequent reconciliation cuts append;
+replay recomputes operational state and spent counts. Halts are sticky until an
+explicit resume against usable authoritative reconciliation. A broker recovery
+never erases or makes an attempt reusable.
+
+Risk policy Decimal identity is now representation-independent, matching strategy
+identity and canonical journal decoding (100 and 1E+2 cannot diverge after reopen).
+This changes no risk arithmetic or canary parameters. Prior v4 had no durable BTC
+policy authority to reinterpret.
+
+Run ceiling counts all committed attempts for the configured run, including
+uncertain or locally stopped sends. A journal currently permits one immutable
+run binding; restart or run renaming cannot reset it. Period ceiling counts the
+same records in half-open UTC intervals aligned to Unix epoch, with the explicit
+configured positive `period_seconds` (86400 means UTC calendar days). No equity
+session clock applies. Future run rollover/config migration remains explicit work.
