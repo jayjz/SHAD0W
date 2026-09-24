@@ -15,9 +15,12 @@ implementation claim.
   The [BTC execution seam](BTC_EXECUTION_SEAM.md) adds typed net fee accounting,
   bounded PAPER activity GETs, explicit SQLite v4→v5 migration, durable BTC
   authority/counters, guarded one-use dispatch and fake-broker restart tests.
-  Alpaca fee linkage/finality and historical coverage remain unproven by the
-  documented legacy endpoint, so its collector fails closed for activation.
-  No BTC application loop or CLI is composed; multi-day warm-start remains open.
+  Alpaca fee linkage/finality remain unproven by the documented legacy endpoint,
+  so strict proof activation fails closed. The bounded Alpaca raw BTC trade
+  history path supports deterministic 73+ hourly warm-start, an explicit
+  historical/live provenance boundary, and a wholly fresh live interval before
+  a trigger. Journal-anchored market evidence supports durable replay. These
+  features are not a strategy validation or profitability claim.
 
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the

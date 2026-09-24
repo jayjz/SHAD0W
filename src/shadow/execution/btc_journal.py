@@ -81,7 +81,28 @@ class BtcJournal:
             )
             self.reconciliation_revision = revision
             self.reconciled_attempts = len(self.attempts)
-            if self.reconciliation.state in (OperationalState.HALTED, OperationalState.UNRESOLVED):
+            # A pristine initial entry may be operationally usable even when the
+            # strict proof reducer cannot verify provider fee/history finality.
+            # Keep `usable` proof-grade; expose that narrow seam separately.
+            pristine_experiment_cut = (
+                not self.attempts
+                and self.reconciliation.state is OperationalState.UNRESOLVED
+                and self.reconciliation.reason == "activity history unproven"
+                and payload[1].query_exhausted
+                and not payload[1].history_verified
+                and not payload[1].executions
+                and not payload[1].fees
+                and not payload[1].unsupported
+                and payload[0].complete
+                and payload[0].orders_complete
+                and payload[0].positions_complete
+                and not payload[0].orders
+                and not payload[0].positions
+            )
+            if self.reconciliation.state is OperationalState.HALTED or (
+                self.reconciliation.state is OperationalState.UNRESOLVED
+                and not pristine_experiment_cut
+            ):
                 self.halted = True
                 self.halt_revision = revision
         elif kind == "halt":
@@ -114,6 +135,41 @@ class BtcJournal:
             and self.reconciliation.state in (OperationalState.FLAT, OperationalState.HOLDING)
         )
 
+    @property
+    def execution_authority_ready(self) -> bool:
+        """Proof-grade readiness or the exact pristine initial-entry cut."""
+        if self.halted or self.reconciled_attempts != len(self.attempts):
+            return False
+        if self.usable:
+            return True
+        if self.attempts or self.reconciliation is None:
+            return False
+        if (
+            self.reconciliation.state is not OperationalState.UNRESOLVED
+            or self.reconciliation.reason != "activity history unproven"
+        ):
+            return False
+        events = self.journal.btc_events()
+        if not events or events[-1][1] != "reconcile":
+            return False
+        value = events[-1][2]
+        return (
+            isinstance(value, tuple)
+            and len(value) == 2
+            and isinstance(value[0], BrokerSnapshot)
+            and isinstance(value[1], CryptoActivityEvidence)
+            and value[1].query_exhausted
+            and not value[1].history_verified
+            and not value[1].executions
+            and not value[1].fees
+            and not value[1].unsupported
+            and value[0].complete
+            and value[0].orders_complete
+            and value[0].positions_complete
+            and not value[0].orders
+            and not value[0].positions
+        )
+
     def _binding(self, account: str, scope: str) -> None:
         if (account, scope) != (
             self.journal.identity.account_id,
@@ -123,7 +179,7 @@ class BtcJournal:
 
     def _validate_attempt(self, attempt: BtcAttempt) -> None:
         config = self.config
-        if config is None or self.halted or not self.usable:
+        if config is None or self.halted or not self.execution_authority_ready:
             raise JournalError("BTC authority not ready")
         if attempt.submission is not None:
             raise JournalError("attempt must start without submission result")
