@@ -194,3 +194,9 @@ produce no signal, report no trade; never alter thresholds or force an order to
 obtain a demonstration. No promise of a round trip or profitable outcome. Closure
 requires broker agreement or an explicit unresolved halt and operator handoff;
 unresolved state blocks further activation. No live-capital gate is implied.
+
+## Assigned BTC trend foundation
+
+The [BTC trend contract](BTC_TREND_PAPER_CONTRACT.md) records the separately
+authorized PAPER-only BTC slice. Pure strategy/features now exist; this does not
+complete P5A.6 or recovery acceptance. Live capital remains unsupported.

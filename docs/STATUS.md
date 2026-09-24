@@ -6,6 +6,11 @@ implementation claim.
 
 ## IMPLEMENTED
 
+- **BTC trend candidate:** deterministic completed trade intervals, configurable
+  trend/momentum/volatility features, cost-aware long/cash proposals and high-water
+  reconstruction. The [engineering configuration](BTC_TREND_PAPER_CONTRACT.md) is
+  unvalidated; this checkpoint has no BTC submission authority.
+
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the
   [crypto market-data contract](CRYPTO_MARKET_DATA_CONTRACT.md).
@@ -62,7 +67,7 @@ implementation claim.
 
 ## NOT IMPLEMENTED
 
-- Crypto execution and crypto strategy: **NOT IMPLEMENTED**.
+- Crypto execution: **NOT IMPLEMENTED**. BTC strategy is an unvalidated pure candidate.
 
 - Continuous or automatic PAPER trading, lifecycle-backed live exits, and automatic
   retry/recovery of uncertain submissions.

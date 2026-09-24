@@ -200,3 +200,9 @@ monotonic receipt nanoseconds before decoding every frame, requires exact
 authentication/subscription acknowledgement and fresh BTC/USD plus ETH/USD resets,
 and fails closed on malformed data or bounded-resource exhaustion. Measurements and
 all execution authority remain out of scope.
+
+## BTC trend consumer
+
+The separately assigned [BTC trend candidate](BTC_TREND_PAPER_CONTRACT.md) consumes
+C1 trades into causal completed hourly intervals. C1 capture itself retains no
+strategy, risk, or execution authority. The candidate does not alter P1B identity.
