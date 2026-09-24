@@ -48,6 +48,22 @@ the respective local subscribers. `/health` returns a sanitized `relay_health`
 object with `connecting`, `authenticated`, `subscribed`, `reconnecting`,
 `failed`, or stopped state; it never includes credentials.
 
+Alpaca may include an empty `orderbooks` field in its upstream subscription
+acknowledgement even though the relay never requests that channel. The relay
+accepts that field only when it is empty; a non-empty or otherwise unsupported
+acknowledgement fails closed.
+
+The provider can emit an otherwise valid fixed BTC/USD event before a changed
+subscription acknowledgement. The relay drops only such pre-ack events, so a
+local subscriber always receives its acknowledgement before provider data;
+anything other than an expected BTC/USD `b`, `t`, or `q` event still fails
+closed.
+
+Alpaca subscriptions are additive. Once the relay adds fixed BTC/USD trades or
+quotes for a local SHAD0W client, it retains those fixed upstream channels until
+the one upstream socket reconnects; fanout still forwards them only to current
+local subscribers. It never sends an arbitrary unsubscribe or another symbol.
+
 Authentication, malformed upstream frames, subscription rejection, and local
 protocol errors fail closed. A provider `406` becomes the explicit
 `upstream_connection_limit` reconnecting state and uses bounded exponential

@@ -37,6 +37,8 @@ class _Connection:
         if value["action"] == "auth":
             await self.received.put(self.upstream.auth_response)
         elif value["action"] == "subscribe":
+            if self.upstream.pre_ack_market_data is not None:
+                await self.received.put(self.upstream.pre_ack_market_data)
             await self.received.put(
                 json.dumps(
                     [
@@ -47,6 +49,7 @@ class _Connection:
                             "bars": value.get("bars", []),
                             "updatedBars": [],
                             "dailyBars": [],
+                            "orderbooks": [],
                         }
                     ]
                 )
@@ -56,6 +59,8 @@ class _Connection:
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         self.closed = True
+        if self.upstream.close_with_receive_error:
+            await self.received.put(OSError("upstream closed"))
 
 
 class _Upstream:
@@ -63,6 +68,8 @@ class _Upstream:
         self.connections: list[_Connection] = []
         self.auth_response = '[{"T":"success","msg":"authenticated"}]'
         self.acknowledge_subscriptions = True
+        self.pre_ack_market_data: str | None = None
+        self.close_with_receive_error = False
 
     async def connect(self) -> _Connection:
         connection = _Connection(self)
@@ -191,6 +198,8 @@ def test_shad_trade_quote_client_adds_only_fixed_channels_and_never_exposes_cred
             assert json.loads(await client.recv())[0]["T"] == "t"
         finally:
             await client.close()
+            await asyncio.sleep(0)
+            assert len(upstream.connections[0].sent) == 3
             await relay.stop()
 
     asyncio.run(scenario())
@@ -255,6 +264,66 @@ def test_406_is_clear_bounded_reconnecting_state_without_overlapping_sockets() -
             assert len(upstream.connections) == 1 and upstream.connections[0].closed
         finally:
             await relay.stop()
+
+    asyncio.run(scenario())
+
+
+def test_provider_empty_orderbooks_acknowledgement_is_accepted_but_nonempty_is_rejected() -> None:
+    desired = CryptoRelaySubscription(bars=True)
+    acknowledgement = {
+        "T": "subscription",
+        "trades": [],
+        "quotes": [],
+        "bars": [BTC_USD],
+        "updatedBars": [],
+        "dailyBars": [],
+        "orderbooks": [],
+    }
+
+    assert AlpacaCryptoFeedRelay._subscription_acknowledges(acknowledgement, desired)
+    assert not AlpacaCryptoFeedRelay._subscription_acknowledges(
+        {**acknowledgement, "orderbooks": [BTC_USD]}, desired
+    )
+
+
+def test_expected_provider_event_before_subscription_ack_is_dropped_until_local_ack() -> None:
+    async def scenario() -> None:
+        upstream = _Upstream()
+        upstream.pre_ack_market_data = _bar()
+        relay = AlpacaCryptoFeedRelay(
+            CryptoRelayCredentials("relay-key", "relay-secret"),
+            port=0,
+            upstream_connect=upstream.connect,
+        )
+        await relay.start()
+        assert relay._server is not None
+        port = next(iter(relay._server.sockets)).getsockname()[1]
+        try:
+            client = await _subscribe(
+                f"ws://127.0.0.1:{port}", {"action": "subscribe", "bars": [BTC_USD]}
+            )
+            await client.close()
+            assert relay.health()["upstream_state"] == "subscribed"
+        finally:
+            await relay.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_collects_pending_upstream_receive_task() -> None:
+    async def scenario() -> None:
+        relay, upstream, _ = await _relay()
+        upstream.close_with_receive_error = True
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict[str, object]] = []
+        prior_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        try:
+            await relay.stop()
+            await asyncio.sleep(0)
+            assert unhandled == []
+        finally:
+            loop.set_exception_handler(prior_handler)
 
     asyncio.run(scenario())
 

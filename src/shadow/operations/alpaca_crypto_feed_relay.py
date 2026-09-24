@@ -333,27 +333,45 @@ class AlpacaCryptoFeedRelay:
         active: CryptoRelaySubscription | None = None
         while not self._stopping:
             desired = self._desired_subscription()
+            if active is not None:
+                # Alpaca's subscribe action is additive. Keep fixed channels
+                # already accepted by this one upstream socket until it
+                # reconnects; local fanout remains subscription-filtered.
+                desired = CryptoRelaySubscription(
+                    trades=active.trades or desired.trades,
+                    quotes=active.quotes or desired.quotes,
+                    bars=True,
+                )
             if desired != active:
                 await socket.send(self._upstream_request(desired))
                 while True:
                     raw = await socket.recv()
                     frame = _loads(raw)
-                    if len(frame) != 1 or not self._subscription_acknowledges(frame[0], desired):
-                        raise ValueError("upstream_subscription_rejected")
-                    active = desired
-                    self._state, self._reason = "subscribed", None
-                    self._ready_clients(active)
-                    break
+                    if len(frame) == 1 and self._subscription_acknowledges(frame[0], desired):
+                        active = desired
+                        self._state, self._reason = "subscribed", None
+                        self._ready_clients(active)
+                        break
+                    if self._is_expected_market_data(frame):
+                        # Alpaca may deliver a valid event before the matching
+                        # subscription acknowledgement. Do not put it ahead of
+                        # a local client's acknowledgement.
+                        self._last_provider_frame_at = datetime.now(UTC).isoformat()
+                        continue
+                    raise ValueError("upstream_subscription_rejected")
                 continue
             self._ready_clients(active)
             receive = asyncio.create_task(socket.recv())
             changed = asyncio.create_task(self._subscription_changed.wait())
-            done, pending = await asyncio.wait(
-                (receive, changed), return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                done, _ = await asyncio.wait(
+                    (receive, changed), return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for task in (receive, changed):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(receive, changed, return_exceptions=True)
             if changed in done:
                 self._subscription_changed.clear()
             if receive in done:
@@ -368,13 +386,21 @@ class AlpacaCryptoFeedRelay:
             *_CHANNELS,
             "updatedBars",
             "dailyBars",
+            "orderbooks",
         }:
             return False
         for channel in _CHANNELS:
             expected = [BTC_USD] if desired.requested(channel) else []
             if message.get(channel, []) != expected:
                 return False
-        return message.get("updatedBars", []) == [] and message.get("dailyBars", []) == []
+        return (
+            message.get("updatedBars", []) == []
+            and message.get("dailyBars", []) == []
+            # Alpaca crypto/us includes this empty acknowledgement field even
+            # when the relay never requests order books.  Accepting only the
+            # empty form preserves the fixed BTC/USD b/t/q subscription.
+            and message.get("orderbooks", []) == []
+        )
 
     def _ready_clients(self, active: CryptoRelaySubscription) -> None:
         for client in tuple(self._clients):
@@ -388,16 +414,23 @@ class AlpacaCryptoFeedRelay:
             ):
                 client.ready.set_result(None)
 
+    @staticmethod
+    def _is_expected_market_data(frame: list[dict[str, object]]) -> bool:
+        kinds = {"t", "q", "b"}
+        return bool(frame) and all(
+            isinstance(item.get("T"), str) and item.get("T") in kinds and item.get("S") == BTC_USD
+            for item in frame
+        )
+
     async def _broadcast(self, raw: str | bytes, frame: list[dict[str, object]]) -> None:
         kinds = {"t": "trades", "q": "quotes", "b": "bars"}
-        if not frame:
-            raise ValueError("malformed upstream frame")
+        if not self._is_expected_market_data(frame):
+            raise ValueError("unexpected_upstream_market_data")
         selected: list[tuple[dict[str, object], str]] = []
         for item in frame:
             event_type = item.get("T")
             kind = kinds.get(event_type) if isinstance(event_type, str) else None
-            if kind is None or item.get("S") != BTC_USD:
-                raise ValueError("unexpected_upstream_market_data")
+            assert kind is not None
             selected.append((item, kind))
         self._last_provider_frame_at = datetime.now(UTC).isoformat()
         for client in tuple(self._clients):
