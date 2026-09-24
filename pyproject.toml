@@ -17,6 +17,7 @@ shadow-live-data = "shadow.application.live_shadow:main"
 shadow-paper-prepare = "shadow.application.paper_preparation:main"
 shadow-paper-canary = "shadow.application.paper_canary:main"
 shadow-crypto-capture = "shadow.application.crypto_capture:main"
+shadow-crypto-paper = "shadow.application.crypto_paper:main"
 
 [dependency-groups]
 dev = [

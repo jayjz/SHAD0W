@@ -2,15 +2,18 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
 import pytest
 
 from shadow.adapters.alpaca.paper_broker import AlpacaPaperBroker
+from shadow.domain.crypto_market import UtcNanoseconds
 from shadow.execution.broker import (
+    BrokerFill,
     BrokerOrder,
+    BrokerPosition,
     BrokerSnapshot,
     OrderStatus,
     SubmissionResult,
@@ -21,7 +24,7 @@ from shadow.execution.btc_authority import BtcAttempt
 from shadow.execution.btc_dispatch import BtcBroker, BtcDispatchAuthority, BtcDispatcher
 from shadow.execution.btc_journal import BtcJournal
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount
-from shadow.execution.crypto_accounting import CryptoActivityEvidence
+from shadow.execution.crypto_accounting import CryptoActivityEvidence, CryptoFeeActivity
 from shadow.execution.dispatch import DispatchHalted
 from shadow.execution.journal import ExecutionJournal
 from shadow.execution.reconciliation import OperationalState, Reconciliation
@@ -146,6 +149,30 @@ def execute(dispatcher: BtcDispatcher, attempt: BtcAttempt) -> SubmissionResult 
     )
 
 
+def initial_experiment_setup(
+    journal: ExecutionJournal,
+) -> tuple[BtcDispatcher, FakeBtcBroker, BtcAttempt]:
+    """The sole initial-entry seam: strict proof unresolved only for fee finality."""
+    config, attempt = authority()
+    store = BtcJournal(journal)
+    store.configure(config)
+    activities = replace(
+        attempt.revalidation.activities, history_verified=False, coverage_reference=None
+    )
+    broker = FakeBtcBroker(
+        store, replace(attempt, revalidation=replace(attempt.revalidation, activities=activities))
+    )
+    dispatcher = BtcDispatcher(
+        broker=broker,
+        journal=store,
+        now=lambda: NOW + timedelta(microseconds=1),
+        controls=lambda: broker.attempt.revalidation.controls,
+        market=lambda: (broker.attempt.revalidation.intervals, broker.attempt.revalidation.quote),
+    )
+    assert dispatcher.recover().state is OperationalState.UNRESOLVED
+    return dispatcher, broker, attempt
+
+
 def test_pristine_experiment_reaches_guarded_submit_and_is_spent(journal: ExecutionJournal) -> None:
     from shadow.execution.btc_classification import (
         AuthorityClassification,
@@ -249,6 +276,193 @@ def test_pristine_experiment_reaches_guarded_submit_and_is_spent(journal: Execut
         assert broker.posts == 1
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "prior_committed_attempt",
+        "broker_position",
+        "broker_order",
+        "execution_activity",
+        "fee_activity",
+        "unsupported_activity",
+        "activity_query_incomplete",
+        "stale_market_evidence",
+        "stale_risk_authorization",
+        "kill_switch_active",
+        "trading_disabled",
+        "account_scope_mismatch",
+        "journal_revision_conflict",
+        "incomplete_broker_snapshot",
+    ],
+)
+def test_initial_experiment_negative_matrix_never_posts(
+    journal: ExecutionJournal, failure: str
+) -> None:
+    dispatcher, broker, attempt = initial_experiment_setup(journal)
+    evaluation = broker.attempt.evaluation
+    expected_revision = dispatcher.store.revision
+    if failure == "prior_committed_attempt":
+        dispatcher.store.commit(attempt, expected_revision=expected_revision)
+        expected_revision = dispatcher.store.revision
+    elif failure == "broker_position":
+        snapshot = broker.attempt.revalidation.snapshot
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation,
+                snapshot=replace(
+                    snapshot,
+                    positions=(
+                        BrokerPosition(
+                            snapshot.evidence, attempt.request.instrument, Decimal("0.01")
+                        ),
+                    ),
+                ),
+            ),
+        )
+    elif failure == "broker_order":
+        ev = broker.attempt.revalidation.snapshot.evidence
+        broker.orders = (
+            BrokerOrder(
+                ev,
+                "existing",
+                "existing-client",
+                attempt.request.instrument,
+                attempt.request.side,
+                attempt.request.quantity,
+                Decimal(0),
+                OrderStatus.NEW,
+                attempt.request.order_type,
+                attempt.request.time_in_force,
+                False,
+                None,
+                None,
+            ),
+        )
+    elif failure == "execution_activity":
+        activities = broker.attempt.revalidation.activities
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation,
+                activities=replace(
+                    activities,
+                    executions=(
+                        BrokerFill(
+                            activities.evidence,
+                            "prior-execution",
+                            "prior-order",
+                            attempt.request.instrument,
+                            attempt.request.side,
+                            attempt.request.quantity,
+                            Decimal("100"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    elif failure == "fee_activity":
+        activities = broker.attempt.revalidation.activities
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation,
+                activities=replace(
+                    activities,
+                    fees=(
+                        CryptoFeeActivity(
+                            activities.evidence,
+                            "prior-fee",
+                            "FEE",
+                            date(2025, 1, 1),
+                            Decimal("0.001"),
+                            "USD",
+                            None,
+                        ),
+                    ),
+                ),
+            ),
+        )
+    elif failure == "unsupported_activity":
+        activities = broker.attempt.revalidation.activities
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation, activities=replace(activities, unsupported=("x",))
+            ),
+        )
+    elif failure == "activity_query_incomplete":
+        activities = broker.attempt.revalidation.activities
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation, activities=replace(activities, query_exhausted=False)
+            ),
+        )
+    elif failure == "stale_market_evidence":
+        dispatcher.market = lambda: (
+            broker.attempt.revalidation.intervals,
+            replace(
+                broker.attempt.revalidation.quote,
+                observation_time=UtcNanoseconds(
+                    broker.attempt.revalidation.quote.observation_time.value - 31_000_000_000
+                ),
+                availability_time=UtcNanoseconds(
+                    broker.attempt.revalidation.quote.availability_time.value - 31_000_000_000
+                ),
+            ),
+        )
+    elif failure == "stale_risk_authorization":
+        evaluation = replace(evaluation, evaluated_ns=evaluation.evaluated_ns - 31_000_000_000)
+    elif failure == "kill_switch_active":
+        dispatcher.controls = lambda: replace(
+            broker.attempt.revalidation.controls, kill_switch_active=True
+        )
+    elif failure == "trading_disabled":
+        dispatcher.controls = lambda: replace(
+            broker.attempt.revalidation.controls, trading_enabled=False
+        )
+    elif failure == "account_scope_mismatch":
+        account = broker.attempt.revalidation.account
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation,
+                account=replace(
+                    account,
+                    evidence=replace(account.evidence, operational_scope="other-scope"),
+                ),
+            ),
+        )
+    elif failure == "journal_revision_conflict":
+        expected_revision -= 1
+    else:
+        snapshot = broker.attempt.revalidation.snapshot
+        broker.attempt = replace(
+            broker.attempt,
+            revalidation=replace(
+                broker.attempt.revalidation, snapshot=replace(snapshot, orders_complete=False)
+            ),
+        )
+    if failure == "prior_committed_attempt":
+        result = dispatcher.execute(
+            evaluation,
+            dispatch_deadline=attempt.dispatch_deadline,
+            expected_revision=expected_revision,
+            authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+        )
+        assert isinstance(result, Reconciliation)
+    else:
+        with pytest.raises(DispatchHalted):
+            dispatcher.execute(
+                evaluation,
+                dispatch_deadline=attempt.dispatch_deadline,
+                expected_revision=expected_revision,
+                authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+            )
+    assert broker.posts == 0
+
+
 def test_authorized_commit_precedes_exactly_one_post(journal: ExecutionJournal) -> None:
     dispatcher, broker, attempt = setup(journal)
     result = execute(dispatcher, attempt)
@@ -262,14 +476,32 @@ def test_authorized_commit_precedes_exactly_one_post(journal: ExecutionJournal) 
 @pytest.mark.parametrize(
     "mode", ["timeout", "disconnect", "malformed", "crash_before_post", "crash_after_post"]
 )
-def test_uncertainty_restart_never_reposts(journal: ExecutionJournal, mode: str) -> None:
-    dispatcher, broker, attempt = setup(journal)
+@pytest.mark.parametrize("experimental", [False, True])
+def test_uncertainty_restart_never_reposts(
+    journal: ExecutionJournal, mode: str, experimental: bool
+) -> None:
+    dispatcher, broker, attempt = (
+        initial_experiment_setup(journal) if experimental else setup(journal)
+    )
+
+    def dispatch_once(target: BtcDispatcher) -> SubmissionResult | Reconciliation:
+        return target.execute(
+            broker.attempt.evaluation,
+            dispatch_deadline=attempt.dispatch_deadline,
+            expected_revision=target.store.revision,
+            authority=(
+                BtcDispatchAuthority.INITIAL_EXPERIMENT
+                if experimental
+                else BtcDispatchAuthority.PROOF
+            ),
+        )
+
     broker.mode = mode
     if mode.startswith("crash"):
         with pytest.raises(SimulatedCrash):
-            execute(dispatcher, attempt)
+            dispatch_once(dispatcher)
     else:
-        result = execute(dispatcher, attempt)
+        result = dispatch_once(dispatcher)
         assert isinstance(result, SubmissionResult) and result.status is SubmissionStatus.UNCERTAIN
         assert dispatcher.store.halted
     count = broker.posts
@@ -287,13 +519,14 @@ def test_uncertainty_restart_never_reposts(journal: ExecutionJournal, mode: str)
             controls=dispatcher.controls,
             market=dispatcher.market,
         )
-        state = execute(restarted, attempt)
+        state = dispatch_once(restarted)
         assert isinstance(state, Reconciliation)
-        assert state.state is (
-            OperationalState.UNRESOLVED
-            if mode == "crash_before_post"
-            else OperationalState.ENTRY_PENDING
-        )
+        if not experimental:
+            assert state.state is (
+                OperationalState.UNRESOLVED
+                if mode == "crash_before_post"
+                else OperationalState.ENTRY_PENDING
+            )
         assert broker.posts == count
         assert len(restarted.store.attempts) == 1
 

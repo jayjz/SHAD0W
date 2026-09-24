@@ -19,8 +19,23 @@ implementation claim.
   so strict proof activation fails closed. The bounded Alpaca raw BTC trade
   history path supports deterministic 73+ hourly warm-start, an explicit
   historical/live provenance boundary, and a wholly fresh live interval before
-  a trigger. Journal-anchored market evidence supports durable replay. These
-  features are not a strategy validation or profitability claim.
+  a trigger. Journal-anchored market evidence supports durable replay. The
+  bounded `shadow-crypto-paper` application composes read-only preflight and a
+  single supervised initial-entry experiment: it requires an explicit
+  acknowledgement and trading-enabled control, uses fresh broker/risk evidence
+  immediately before the existing guarded dispatch seam, records post-attempt
+  observations, and stops. Historical context alone cannot submit. The strict
+  proof reducer remains unchanged: the initial experiment is allowed only at
+  the documented pristine fee-finality seam. These features are not a strategy
+  validation or profitability claim.
+
+### BTC PAPER experiment application
+
+- Deterministic raw BTC warm-start.
+- Fresh-live trigger boundary.
+- Experiment/proof authority distinction.
+- Guarded initial experimental dispatch.
+- Bounded `shadow-crypto-paper` preflight/experiment runner.
 
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the
@@ -78,11 +93,10 @@ implementation claim.
 
 ## NOT IMPLEMENTED
 
-- BTC PAPER application, durable BTC risk/lifecycle integration and recovery:
-  **NOT IMPLEMENTED**. Transport and pure reconciliation foundations exist.
-
-- Continuous or automatic PAPER trading, lifecycle-backed live exits, and automatic
-  retry/recovery of uncertain submissions.
+- Automated BTC exits.
+- Continuous BTC trading.
+- Proof-grade Alpaca fee finality/linkage.
+- Automatic retry/recovery of uncertain submissions.
 - Live-capital endpoints, credentials, or trading support.
 - A validated/profitable strategy claim.
 
