@@ -8,7 +8,9 @@ from fractions import Fraction
 
 from shadow.domain.crypto_market import CryptoQuote, UtcNanoseconds
 from shadow.execution.broker import BrokerFill, BrokerSnapshot, Eligibility, SubmissionStatus
+from shadow.execution.btc_authority import BtcAttempt
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount, BtcSubmitRequest
+from shadow.execution.crypto_accounting import CryptoActivityEvidence, inventory_effects
 from shadow.execution.journal import CommittedAttempt
 from shadow.execution.reconciliation import OperationalState, Reconciliation, reconcile
 from shadow.features.btc_trend import BTC, BTC_CONTEXT, CompletedBtcInterval
@@ -34,6 +36,7 @@ def linked_entry_ns(
     fills: tuple[BrokerFill, ...],
     snapshot: BrokerSnapshot,
     reconciliation: Reconciliation,
+    crypto_evidence: CryptoActivityEvidence | None = None,
 ) -> int | None:
     """Derive the current long's first execution time from complete linked fills.
 
@@ -74,12 +77,30 @@ def linked_entry_ns(
         for a, b in zip(ordered, ordered[1:], strict=False)
     ):
         return None
+    net_effects = None
+    if crypto_evidence is not None:
+        try:
+            effects = inventory_effects(crypto_evidence)
+            net_effects = {
+                effect.execution.execution_id: Fraction(effect.net_btc) for effect in effects
+            }
+            originals = {effect.execution.execution_id: effect.execution for effect in effects}
+            if any(originals.get(fill.execution_id) != fill for fill in fills):
+                return None
+        except (ValueError, LookupError):
+            return None
+        if set(net_effects) != {fill.execution_id for fill in fills}:
+            return None
     exposure = Fraction(0)
     entry_ns = None
     for fill in ordered:
         if exposure == 0 and fill.side is OrderSide.BUY:
             entry_ns = utc_ns(fill.evidence.observation_time)
-        exposure += Fraction(fill.quantity) * (1 if fill.side is OrderSide.BUY else -1)
+        exposure += (
+            net_effects[fill.execution_id]
+            if net_effects is not None
+            else Fraction(fill.quantity) * (1 if fill.side is OrderSide.BUY else -1)
+        )
         if exposure < 0:
             return None
         if exposure == 0:
@@ -98,11 +119,13 @@ def evaluate_btc_risk(
     account: BtcCashAccount,
     asset: BtcBrokerAsset,
     snapshot: BrokerSnapshot,
-    attempts: tuple[CommittedAttempt, ...],
+    attempts: tuple[CommittedAttempt | BtcAttempt, ...],
     controls: OperatorControls,
     now_ns: int,
     fills: tuple[BrokerFill, ...] = (),
     independent_risk_halt: bool = False,
+    crypto_evidence: CryptoActivityEvidence | None = None,
+    require_crypto_evidence: bool = False,
 ) -> BtcRiskEvaluation:
     """Recompute lifecycle/features; proposals cannot declare their own authority."""
     UtcNanoseconds(now_ns)
@@ -110,10 +133,19 @@ def evaluate_btc_risk(
         raise TypeError("typed BTC request required")
     request.__post_init__()
     reasons: list[str] = []
-    state = reconcile(attempts=attempts, snapshot=snapshot)
+    state = reconcile(
+        attempts=attempts,
+        snapshot=snapshot,
+        crypto_evidence=crypto_evidence,
+        require_crypto_evidence=require_crypto_evidence,
+    )
     if any(
         attempt.submission is None or attempt.submission.status is SubmissionStatus.UNCERTAIN
         for attempt in attempts
+    ) and not (
+        require_crypto_evidence
+        and crypto_evidence is not None
+        and state.state in (OperationalState.FLAT, OperationalState.HOLDING)
     ):
         reasons.append("uncertain_submission")
     binding = (policy.account_id, policy.operational_scope)
@@ -196,7 +228,12 @@ def evaluate_btc_risk(
                 reasons.append("exit_requires_holding")
             if request.quantity > state.exposure:
                 reasons.append("exit_exceeds_exposure")
-            entry = linked_entry_ns(fills=fills, snapshot=snapshot, reconciliation=state)
+            entry = linked_entry_ns(
+                fills=fills,
+                snapshot=snapshot,
+                reconciliation=state,
+                crypto_evidence=crypto_evidence,
+            )
             high = (
                 None
                 if entry is None

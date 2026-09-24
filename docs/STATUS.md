@@ -12,8 +12,12 @@ implementation claim.
   unvalidated. Typed BTC MARKET/GTC transport and exact fractional reconciliation
   are tested with fake broker evidence. Independent BTC cash-limited risk
   evaluation recomputes features/lifecycle and rejects missing exit fill history.
-  No BTC application is composed; see the contract for fee normalization,
-  durable journal and multi-day warm-start blockers.
+  The [BTC execution seam](BTC_EXECUTION_SEAM.md) adds typed net fee accounting,
+  bounded PAPER activity GETs, explicit SQLite v4→v5 migration, durable BTC
+  authority/counters, guarded one-use dispatch and fake-broker restart tests.
+  Alpaca fee linkage/finality and historical coverage remain unproven by the
+  documented legacy endpoint, so its collector fails closed for activation.
+  No BTC application loop or CLI is composed; multi-day warm-start remains open.
 
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the

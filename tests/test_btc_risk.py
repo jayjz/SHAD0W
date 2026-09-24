@@ -279,3 +279,60 @@ def test_uncertain_attempt_freezes_even_with_later_linked_order(tmp_path: Path) 
     result = evaluate_btc_risk(**values)
     assert result.reconciliation_state == "holding"
     assert "uncertain_submission" in result.reasons
+
+
+def test_verified_fee_net_holding_reconstructs_exit_after_uncertain_recovery(
+    tmp_path: Path,
+) -> None:
+    from shadow.execution.crypto_accounting import CryptoActivityEvidence, CryptoFeeActivity
+
+    values = holding_inputs(tmp_path)
+    values["attempts"] = (replace(values["attempts"][0], submission=None),)
+    snapshot = values["snapshot"]
+    net = Decimal("0.001197")
+    values["snapshot"] = replace(
+        snapshot, positions=(replace(snapshot.positions[0], quantity=net),)
+    )
+    values["request"] = replace(values["request"], quantity=net)
+    values["asset"] = replace(values["asset"], minimum_trade_increment=Decimal("0.000000001"))
+    fee = CryptoFeeActivity(
+        snapshot.evidence,
+        "provider-fee",
+        "CFEE",
+        NOW.date(),
+        Decimal("0.000003"),
+        "BTC",
+        "execution",
+    )
+    activities = CryptoActivityEvidence(
+        snapshot.evidence,
+        snapshot.history_start,
+        snapshot.history_end,
+        values["fills"],
+        (fee,),
+        (),
+        True,
+        True,
+        ("execution",),
+        "synthetic-provider-fee-finality",
+    )
+    result = evaluate_btc_risk(**values, crypto_evidence=activities, require_crypto_evidence=True)
+    assert result.authorized
+    missing = replace(activities, fees=(), fee_complete_ids=())
+    assert not evaluate_btc_risk(
+        **values, crypto_evidence=missing, require_crypto_evidence=True
+    ).authorized
+
+    altered = (
+        replace(
+            values["fills"][0],
+            evidence=replace(
+                values["fills"][0].evidence,
+                observation_time=NOW - timedelta(hours=23),
+                availability_time=NOW - timedelta(hours=23),
+            ),
+        ),
+    )
+    assert not evaluate_btc_risk(
+        **dict(values, fills=altered), crypto_evidence=activities, require_crypto_evidence=True
+    ).authorized

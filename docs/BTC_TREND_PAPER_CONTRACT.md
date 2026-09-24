@@ -76,7 +76,9 @@ No documentation sample minimum or increment is installed as trading authority.
 Tests use synthetic asset observations and fake transport only.
 
 The existing reducer distinguishes typed BTC attempts from equity attempts.
-BTC linked cumulative fills must equal broker exposure exactly; arithmetic uses
+The legacy gross-only fixture path requires BTC cumulative fills to equal
+broker exposure exactly; executable BTC authority instead requires verified
+net activity effects (see the execution seam contract). Arithmetic uses
 exact rational quantities to avoid caller Decimal-context rounding. Fractional
 equity residue still HALTs. Empty complete initial inventory is FLAT; outstanding
 entry/exit is ENTRY_PENDING/EXIT_PENDING; linked fractional exposure is HOLDING;
@@ -110,65 +112,38 @@ for high-water reconstruction. Missing fills, replacement chronology, conflictin
 same-time sides or incomplete close history reject. An independent risk-halt
 input may request an exit, but the kill switch and disabled trading freeze all
 automation, including exits. ENTRY_PENDING, EXIT_PENDING, UNRESOLVED and HALTED
-cannot authorize a proposal. Any previously uncertain attempt freezes evaluation
-of new submissions even if later order evidence would project HOLDING.
+cannot authorize a proposal. In the legacy gross-only path, a previously uncertain attempt freezes evaluation
+even if later order evidence would project HOLDING. The strict net-accounting
+recovery path below additionally requires verified activity evidence and durable
+halt/resume handling.
 
 Evaluations are typed serializable evidence, not dispatch capabilities. Tests
 round-trip canonical close/fill evidence through a file and reproduce exit
 calculations. This proves deterministic reconstruction from supplied evidence,
 not application restart acceptance or correct provider fill ingestion.
 
-## Composition status and blockers
+## Durable execution seam and remaining composition
 
-**This is a partial foundation, not the requested end-to-end BTC PAPER loop.**
-There is no `shadow-crypto-paper` CLI, BTC dispatcher, or runnable BTC command.
-No external PAPER order was sent during implementation. Existing SPY dispatch
-and sealed P1B research identity are unchanged.
+The [execution seam contract](BTC_EXECUTION_SEAM.md) records the current provider
+research, accounting equations, schema v5 migration, durable BTC authority,
+submission ceilings, guarded dispatcher and fault-test coverage. New BTC attempt
+records always require strict verified net activity accounting. The legacy gross
+fixture path remains for existing reducer tests; it grants no executable BTC
+authority. Strategy cost estimates never become provider fee evidence.
 
-The remaining dependencies are concrete:
+The dispatcher reuses this pure evaluator with strict activity evidence and
+net-inventory entry chronology. Recovery of an originally uncertain submission
+can support a later distinct proposal only through complete linked broker
+activity, a usable persisted reconciliation, explicit resume after halt and fresh
+risk. A spent original attempt can never be dispatched again.
 
-1. The adapter has cumulative order fills, but `read_updates` explicitly returns
-   unavailable. It does not collect complete execution events with execution
-   timestamps, corrections, and fee adjustments. The risk foundation requires
-   complete linked fill evidence for lifecycle-backed exits.
-2. Alpaca documents fees in the received asset and potentially delayed CFEE/FEE
-   activities. Therefore raw BTC buy fills need not equal net broker BTC exposure.
-   This reducer deliberately HALTs that mismatch. A verified normalized net-fill
-   contract and complete activity collection are required; fee amounts must never
-   be guessed from the strategy's cost assumptions. The provider's exact PAPER
-   behavior has not been empirically verified in this sprint.
-3. The existing v4 SQLite journal embeds equity RiskDecision/clock values per
-   attempt. The codec can serialize BTC values, but BTC admission, configuration
-   binding, durable close/fill history, persistent halt state, submission ceilings,
-   and recovery verification are not composed into that journal.
-4. A BTC dispatcher must consume only fresh independent authorization, commit
-   before one POST, forbid replay of an attempted intent, then reconcile before
-   continuation. Existing equity no-duplicate tests do not establish BTC behavior.
-5. C1 capture is bounded to one hour; verified multi-day BTC history/warm-start
-   composition is absent. Raw-trade history must supply the 73 contiguous
-   completed canary intervals without substituting provider bars or filling gaps.
+There is still no `shadow-crypto-paper` CLI or continuous application loop.
+Alpaca's documented legacy activity rows do not establish fee linkage/asset
+finality or guaranteed retention. The collector therefore reports these gaps;
+real activation remains blocked pending sufficient provider evidence. Verified
+multi-day C1 warm-start, continuous durable history, operator controls/run lifecycle
+and application composition remain to be implemented. No real PAPER order was
+sent. SPY behavior and sealed P1B identities are unchanged.
 
-Consequently restart FLAT/HOLDING/pending/unresolved/halted dispatch invariants,
-BTC no-duplicate POST, bounded submission counts, and a live evidence-to-order
-round trip remain unverified. Reducer states and pure risk rejections are tested,
-including uncertainty freeze and fractional equity regression coverage. A future
-application must persist and recover the same evidence before claiming restart
-acceptance. PAPER performance never proves profitability; no live-capital endpoint
-or support is provided.
-
-## Verification receipt for this implementation
-
-- New BTC focused suites: 39 passed (8 strategy, 11 execution, 20 risk).
-- Execution checkpoint including existing broker/journal/reducer suites: 236 passed.
-- Risk checkpoint including existing equity risk/adversarial/dispatch suites: 200 passed.
-- Final canonical pytest: 982 passed. Four existing localhost relay tests initially
-  failed under socket-restricted sandboxing; the full rerun with localhost access
-  passed. This was an environment restriction, not a product regression.
-- `uv run ruff check .`: passed.
-- `uv run ruff format --check .`: 134 files passed.
-- `uv run mypy src tests`: 104 source files passed.
-- `git diff --check`: passed.
-- `UV_CACHE_DIR=/tmp/shadow-uv-cache` was used because the default cache was read-only.
-- No real PAPER or live-capital order was submitted. No empirical strategy,
-  provider fee normalization, BTC application restart, or profitability acceptance
-  is claimed by these automated receipts.
+Current verification receipts are recorded in the execution seam contract;
+component tests do not establish real-provider or end-to-end canary acceptance.

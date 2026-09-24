@@ -141,7 +141,10 @@ dependency order.
 The [BTC trend contract](BTC_TREND_PAPER_CONTRACT.md) defines additive trade-built
 intervals, return features, one unvalidated long/cash strategy, typed BTC MARKET/GTC
 transport, exact fractional reconciliation, and independent cash-limited risk
-evaluation. Equity request/strategy/risk behavior and journal serialization remain
-compatible. BTC risk returns evidence only; durable admission and the bounded
-application are not composed. Provider fills/fees and durable lifecycle history
-remain explicit blockers to end-to-end and restart acceptance.
+evaluation. Equity request/strategy/risk behavior remains unchanged. Journal v5
+adds BTC append-only evidence with an explicit additive migration from v4.
+The [BTC execution seam](BTC_EXECUTION_SEAM.md) separates pure evaluation,
+durable authority, one-use dispatch, normalized net inventory and reconciliation.
+The adapter calls a local final guard immediately before POST. Broker fee
+linkage/finality and retention remain explicit unresolved provider limitations;
+no BTC application loop or real-provider restart acceptance is claimed.

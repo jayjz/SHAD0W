@@ -83,3 +83,73 @@ run binding; restart or run renaming cannot reset it. Period ceiling counts the
 same records in half-open UTC intervals aligned to Unix epoch, with the explicit
 configured positive `period_seconds` (86400 means UTC calendar days). No equity
 session clock applies. Future run rollover/config migration remains explicit work.
+
+## Guarded BTC submission and recovery
+
+`BtcDispatcher` requires fresh read-only recovery on each process construction.
+It accepts an authorized BTC evaluation, checks its age and exact immutable run
+binding, rereads account/asset/activity/order/position evidence, and recomputes
+risk against current market intervals, quote and controls. Strict reconciliation
+must agree with the committed lifecycle, including exposure and linked orders.
+
+The caller supplies the expected journal revision and a deadline within every
+input validity window. The dispatcher commits exact attempt evidence under that
+revision, consuming run/period capacity before invoking `submit`. The adapter
+calls the final local guard after its final asset GET and immediately before the
+single POST. That guard rechecks owner/thread, journal revision, controls, UTC
+and monotonic deadlines. There are no automatic POST retries. This is **at most
+one POST invocation per committed logical BTC intent**, not exactly-once network
+delivery or guaranteed broker execution. A final local refusal also spends the
+attempt. There remains an unavoidable remote race after the final local check.
+
+Timeout, disconnect or malformed response becomes durable uncertainty. A process
+crash before POST or before response persistence leaves the original committed
+attempt with no result. Startup and redelivery only collect reconciliation;
+404/empty history cannot free it. Recovered original broker evidence may establish
+pending/holding/flat but cannot unspend its identity. Uncertainty halts persist;
+resume requires a later usable reconciliation and an explicit caller action.
+A distinct source opportunity then still requires fresh risk, evidence and budget.
+Net fee accounting also supplies lifecycle entry time to the existing exit risk
+calculation; gross fill prices/quantities remain separate evidence.
+
+The adapter supports a requested history cut for paired activity/order reads;
+positions and activities remain sequential, not atomic. Disagreement freezes
+submission. No strategy, 72h/6h/24h canary or SPY MARKET/DAY sizing rule changed.
+
+The current [Trading API endpoint reference](https://docs.alpaca.markets/us/reference/getaccountactivities-2)
+also documents `order_id` filtering (useful for order fills), creation-time query
+bounds, and fees commonly created on the next UTC day. It does not establish a
+fee-to-execution mapping or a fee-finality/retention guarantee. The collector does
+not use a filter that could hide unlinked account activity, and does not infer
+settlement completeness from creation-time pagination. The legacy `CFEE` pair
+symbol/description cannot safely stand in for an explicit fee asset and linkage.
+
+## Application composition still required
+
+There is no `shadow-crypto-paper` CLI or continuous application loop. The next
+session must compose verified multi-day C1 warm-start and durable market history,
+control/operator resume handling, current market callbacks, run lifecycle and
+operational reporting. The component journal stores all intervals/quote/broker
+inputs used by each attempt, not a continuous market-data archive. A documented
+provider evidence source establishing fee asset/linkage/finality and historical
+coverage is still required before Alpaca activation. Current Alpaca activity
+reads deliberately cannot make the guarded dispatcher ready. No external PAPER
+order or live-capital endpoint was used or added.
+
+## Verification receipt (2026-09-24)
+
+- Full `uv run pytest`: **1027 passed**. The sandbox-only attempt failed four
+  existing localhost relay tests because socket binding was prohibited; the full
+  run with localhost access passed. No external broker transport was used.
+- Added 45 regressions: 14 accounting/collector, 5 journal, 25 dispatch and 1
+  net-fee exit-risk test. Coverage includes delayed/missing fees, explicit zero
+  fees, duplicate and malformed activities, exhausted/truncated pagination,
+  exact net HOLDING/FLAT, commit-before-send, timeout/disconnect/malformed response,
+  both crash boundaries, reopen, durable ceilings, revision/deadline/kill/ownership
+  guards, legacy account halts and distinct-opportunity recovery.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: 143 files passed.
+- `uv run mypy src tests`: 112 source files passed.
+- `git diff --check`: passed.
+- Commands used `UV_CACHE_DIR=/tmp/shadow-uv-cache` for the writable cache.
+- Strategy and canary parameters are unchanged; no real PAPER order was submitted.

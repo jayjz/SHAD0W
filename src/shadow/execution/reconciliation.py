@@ -92,6 +92,8 @@ def reconcile(
         isinstance(item, BrokerOrder) for item in lookup_orders
     ):
         raise TypeError("lookup_orders must be typed broker evidence")
+    if any(isinstance(attempt, BtcAttempt) for attempt in attempts):
+        require_crypto_evidence = True
     binding = (snapshot.evidence.account_id, snapshot.evidence.operational_scope)
     if any(
         (attempt.request.account_id, attempt.request.operational_scope) != binding
@@ -301,6 +303,10 @@ def reconcile(
             if fill.side != linked[fill.order_id].side:
                 return _result(OperationalState.HALTED, reason="execution side conflict")
             totals[fill.order_id] += Fraction(fill.quantity)
+        if any(totals[key] > order.filled_quantity for key, order in linked.items()):
+            return _result(
+                OperationalState.HALTED, reason="gross executions exceed linked order fills"
+            )
         if any(totals[key] != order.filled_quantity for key, order in linked.items()):
             return _result(OperationalState.UNRESOLVED, reason="gross execution coverage mismatch")
         expected = sum((Fraction(effect.net_btc) for effect in effects), Fraction(0))

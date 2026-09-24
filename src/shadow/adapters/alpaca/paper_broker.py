@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -534,7 +534,11 @@ class AlpacaPaperBroker:
             )
 
     def read_reconciliation_snapshot(
-        self, *, earliest_attempt: datetime, max_pages: int = 10
+        self,
+        *,
+        earliest_attempt: datetime,
+        max_pages: int = 10,
+        history_end: datetime | None = None,
     ) -> BrokerSnapshot | BrokerError:
         """Collect a bounded, explicit submission-history window for P5A.3.
 
@@ -549,6 +553,10 @@ class AlpacaPaperBroker:
             raise AlpacaPaperError("bounded positive page limit required")
         start = earliest_attempt.astimezone(UTC)
         positions_response, cut = self._call("GET", "/v2/positions")
+        if history_end is not None:
+            if history_end.tzinfo is None or not start <= history_end <= cut:
+                raise AlpacaPaperError("invalid requested reconciliation cut")
+            cut = history_end
         if positions_response.status != 200:
             return self._error(positions_response, cut, "positions")
         if start > cut:
@@ -751,7 +759,9 @@ class AlpacaPaperBroker:
             "trade-update stream is not part of one-shot canary",
         )
 
-    def submit(self, request: SubmitRequest) -> SubmissionResult:
+    def submit(
+        self, request: SubmitRequest, *, before_post: Callable[[], None] | None = None
+    ) -> SubmissionResult:
         common = (
             request.account_id == self._account_id
             and request.operational_scope == self._scope
@@ -790,6 +800,8 @@ class AlpacaPaperBroker:
             "extended_hours": False,
             "client_order_id": request.client_id,
         }
+        if before_post is not None:
+            before_post()
         try:
             response, received = self._call("POST", "/v2/orders", payload)
         except AlpacaPaperError as exc:
@@ -814,7 +826,7 @@ class AlpacaPaperBroker:
                     self._order(_object(response.body), received, reference),
                     None,
                 )
-            except AlpacaPaperError:
+            except (AlpacaPaperError, ValueError, TypeError, KeyError):
                 return SubmissionResult(
                     evidence,
                     request,

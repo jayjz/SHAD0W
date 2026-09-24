@@ -135,6 +135,10 @@ def test_revision_conflict_halt_and_codec_replay(journal: ExecutionJournal) -> N
     assert recovered.halted
     with pytest.raises(JournalError):
         recovered.commit(attempt, expected_revision=recovered.revision)
+    with pytest.raises(JournalError):
+        recovered.resume(expected_revision=recovered.revision)
+    recovered.record_reconciliation(attempt.revalidation.snapshot, attempt.revalidation.activities)
+    attempt = replace(attempt, reconciliation_revision=recovered.reconciliation_revision)
     recovered.resume(expected_revision=recovered.revision)
     assert not recovered.halted
     recovered.commit(attempt, expected_revision=recovered.revision)

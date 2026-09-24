@@ -24,6 +24,7 @@ class BtcJournal:
         self.reconciliation_revision = 0
         self.reconciled_attempts = -1
         self.halted = False
+        self.halt_revision = 0
         self.refresh()
 
     def refresh(self) -> None:
@@ -34,6 +35,7 @@ class BtcJournal:
         self.reconciliation_revision = 0
         self.reconciled_attempts = -1
         self.halted = False
+        self.halt_revision = 0
         for revision, kind, payload in self.journal.btc_events():
             if revision != self.revision + 1:
                 raise JournalError("BTC event revision gap")
@@ -61,6 +63,7 @@ class BtcJournal:
             )
             if payload.status is SubmissionStatus.UNCERTAIN:
                 self.halted = True
+                self.halt_revision = revision
         elif kind == "reconcile":
             if (
                 not isinstance(payload, tuple)
@@ -80,6 +83,7 @@ class BtcJournal:
             self.reconciled_attempts = len(self.attempts)
             if self.reconciliation.state in (OperationalState.HALTED, OperationalState.UNRESOLVED):
                 self.halted = True
+                self.halt_revision = revision
         elif kind == "halt":
             if (
                 not isinstance(payload, tuple)
@@ -90,8 +94,13 @@ class BtcJournal:
             ):
                 raise JournalError("malformed BTC halt")
             self.halted = True
+            self.halt_revision = revision
         elif kind == "resume":
-            if payload != self.reconciliation_revision or not self.usable:
+            if (
+                payload != self.reconciliation_revision
+                or not self.usable
+                or self.reconciliation_revision <= self.halt_revision
+            ):
                 raise JournalError("resume requires current authoritative reconciliation")
             self.halted = False
         else:

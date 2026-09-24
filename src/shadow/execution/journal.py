@@ -508,6 +508,17 @@ class ExecutionJournal:
         finally:
             connection.close()
 
+    def has_legacy_halts(self) -> bool:
+        """Existing account-wide halts also freeze BTC; migration cannot clear them."""
+        self.assert_held()
+        try:
+            return (
+                self._connection.execute("SELECT 1 FROM journal_halts LIMIT 1").fetchone()
+                is not None
+            )
+        except sqlite3.Error as exc:
+            raise JournalError("cannot establish account halt state") from exc
+
     def btc_events(self) -> tuple[tuple[int, str, object], ...]:
         self.assert_held()
         try:

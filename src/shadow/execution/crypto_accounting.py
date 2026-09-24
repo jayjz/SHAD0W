@@ -39,6 +39,8 @@ class CryptoFeeActivity:
     correction_of: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.evidence, Evidence) or type(self.provider_date) is not date:
+            raise ValueError("typed fee evidence and provider date required")
         for value in (self.activity_id, self.activity_type):
             if not isinstance(value, str) or not value or value != value.strip():
                 raise ValueError("activity identity required")
@@ -79,6 +81,18 @@ class CryptoActivityEvidence:
     coverage_reference: str | None
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.evidence, Evidence)
+            or not isinstance(self.executions, tuple)
+            or not all(isinstance(item, BrokerFill) for item in self.executions)
+            or not isinstance(self.fees, tuple)
+            or not all(isinstance(item, CryptoFeeActivity) for item in self.fees)
+            or not isinstance(self.unsupported, tuple)
+            or not all(isinstance(item, str) and item for item in self.unsupported)
+            or not isinstance(self.fee_complete_ids, tuple)
+            or not all(isinstance(item, str) and item for item in self.fee_complete_ids)
+        ):
+            raise ValueError("typed immutable activity evidence required")
         if (
             self.history_start.tzinfo is None
             or self.history_end.tzinfo is None
@@ -126,6 +140,8 @@ def inventory_effects(batch: CryptoActivityEvidence) -> tuple[CryptoInventoryEff
         if fee.execution_id is not None and fee.execution_id not in executions:
             raise ValueError("unlinked broker fee")
         fees[fee.activity_id] = fee
+    if fees.keys() & executions.keys():
+        raise ValueError("activity identity reused across execution and fee")
     if set(batch.fee_complete_ids) - executions.keys():
         raise ValueError("fee coverage names unknown execution")
     if (
