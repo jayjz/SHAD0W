@@ -211,3 +211,24 @@ BTC now has a separately typed PAPER transport and pure cash-limited risk/reduce
 foundation. This does not add order authority to C1 capture. A bounded BTC
 application and multi-day raw-trade warm-start remain absent; the BTC contract
 records execution-event/fee and durable lifecycle dependencies.
+
+## BTC application historical context
+
+The bounded BTC application may retrieve raw `crypto/us` BTC/USD trades through
+Alpaca's documented historical trades API, with ascending, bounded pagination.
+Historical records use `alpaca:crypto:us:historical-fetch` provenance and actual
+page retrieval availability; original historical receipt is unknown. They are
+feature context, never fresh trigger evidence. No provider bars or interpolation
+are used. Completed hour closes use the same observation-ordered last-trade rule
+as C1, including explicit empty hours. Availability is the maximum receipt of
+inputs and the later boundary trade. Across the historical/live handoff this can
+be later than a buffered live receipt, which is retained unchanged.
+
+A wholly live completed interval beginning at or after the explicit handoff is
+required before evaluation. A mixed interval cannot trigger. Restarts establish a
+new handoff and backfill from the last completed end, preserving all older closes
+for high-water reconstruction. The market JSONL evidence is append-only, fsynced,
+hash-linked and anchored by path, byte length and digest in application evidence
+in the existing owned SQLite journal. Missing files, altered bytes, complete-line
+truncation and uncommitted tails reject; no automatic truncation/repair exists.
+Application records are separate from the BTC execution authority projection.

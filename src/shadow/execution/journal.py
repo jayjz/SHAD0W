@@ -508,6 +508,33 @@ class ExecutionJournal:
         finally:
             connection.close()
 
+    def application_events(self, namespace: str) -> tuple[object, ...]:
+        """Owned application evidence, separate from execution authority projections."""
+        self.assert_held()
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS application_events ("
+            "sequence INTEGER PRIMARY KEY, namespace TEXT NOT NULL, payload BLOB NOT NULL) STRICT"
+        )
+        return tuple(
+            decode_canonical(bytes(row[0]))
+            for row in self._connection.execute(
+                "SELECT payload FROM application_events WHERE namespace=? ORDER BY sequence",
+                (namespace,),
+            )
+        )
+
+    def append_application_event(self, namespace: str, payload: object) -> None:
+        self._transaction()
+        try:
+            self._connection.execute(
+                "INSERT INTO application_events(namespace,payload) VALUES (?,?)",
+                (namespace, canonical_bytes(payload)),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
     def has_legacy_halts(self) -> bool:
         """Existing account-wide halts also freeze BTC; migration cannot clear them."""
         self.assert_held()
