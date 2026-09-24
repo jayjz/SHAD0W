@@ -135,3 +135,13 @@ exit operation. P4A therefore remains FLAT observational candidate generation.
 Live-capital support remains prohibited. See [STATUS.md](STATUS.md) for current
 coverage and [the execution plan](P5A_EXECUTION_PLAN.md) for the remaining
 dependency order.
+
+## BTC trend/PAPER foundation
+
+The [BTC trend contract](BTC_TREND_PAPER_CONTRACT.md) defines additive trade-built
+intervals, return features, one unvalidated long/cash strategy, typed BTC MARKET/GTC
+transport, exact fractional reconciliation, and independent cash-limited risk
+evaluation. Equity request/strategy/risk behavior and journal serialization remain
+compatible. BTC risk returns evidence only; durable admission and the bounded
+application are not composed. Provider fills/fees and durable lifecycle history
+remain explicit blockers to end-to-end and restart acceptance.

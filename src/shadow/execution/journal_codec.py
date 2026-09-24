@@ -44,7 +44,7 @@ from shadow.execution.broker import (
     TradeUpdate,
     UpdateKind,
 )
-from shadow.execution.crypto import BtcBrokerAsset, BtcSubmitRequest
+from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount, BtcSubmitRequest
 from shadow.features import (
     FeatureInput,
     FeatureName,
@@ -52,6 +52,8 @@ from shadow.features import (
     FeatureState,
     FeatureUnavailableReason,
 )
+from shadow.features.btc_trend import BtcTrendFeatures, CompletedBtcInterval
+from shadow.risk.btc_models import BtcRiskEvaluation, BtcRiskPolicy
 from shadow.risk.models import (
     OpenLongPosition,
     OperationalQuantityConfig,
@@ -69,6 +71,7 @@ from shadow.risk.models import (
     TimeInForce,
 )
 from shadow.strategies import Signal, SignalReason, SignalType
+from shadow.strategies.btc_trend import BtcAction, BtcProposal, BtcTrendConfig
 
 CODEC_VERSION = "shadow.execution.journal-codec.v1"
 
@@ -148,6 +151,7 @@ def _utc_from_text(value: object) -> datetime:
 
 _ENUMS: tuple[type[StrEnum], ...] = (
     AvailabilitySemantics,
+    BtcAction,
     Eligibility,
     ErrorCategory,
     FeatureInput,
@@ -173,6 +177,13 @@ _DATACLASSES: tuple[type[Any], ...] = (
     Bar,
     BarInterval,
     BtcBrokerAsset,
+    BtcCashAccount,
+    BtcRiskEvaluation,
+    BtcRiskPolicy,
+    BtcTrendFeatures,
+    BtcTrendConfig,
+    BtcProposal,
+    CompletedBtcInterval,
     BtcSubmitRequest,
     BrokerAccount,
     BrokerAsset,

@@ -236,3 +236,25 @@ def test_btc_fractional_lifecycle_and_uncertainty(tmp_path: Path) -> None:
         ).state
         is OperationalState.HALTED
     )
+
+
+def test_cash_account_never_uses_margin_buying_power() -> None:
+    from shadow.execution.crypto import BtcCashAccount
+    from tests.test_alpaca_paper_broker import ACCOUNT_NUMBER, account
+
+    payload = dict(account(), cash="100", non_marginable_buying_power="80", crypto_status="ACTIVE")
+    transport = RecordingTransport([response(200, payload)])
+    broker = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id=ACCOUNT_NUMBER,
+        operational_scope="scope",
+        transport=transport,
+    )
+    observed = broker.read_btc_account()
+    assert isinstance(observed, BtcCashAccount)
+    assert observed.available_cash == Decimal(80)
+    assert observed.buying_power == Decimal(80)
+    assert observed.crypto_trading is Eligibility.ELIGIBLE
+    missing = dict(account())
+    transport.replies.append(response(200, missing))
+    assert isinstance(broker.read_btc_account(), BrokerError)

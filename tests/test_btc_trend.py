@@ -161,3 +161,23 @@ def test_all_economic_parameters_bind_identity_and_cost() -> None:
         replace(config, estimated_taker_fee=Decimal("0.002500")).configuration_id
         == config.configuration_id
     )
+
+
+def test_negative_trend_and_actual_volatile_return_series() -> None:
+    config = engineering_canary()
+    falling_builder = BtcIntervals(started_ns=0)
+    falling = tuple(
+        row for hour in range(74) for row in falling_builder.accept(trade(hour, str(200 - hour)))
+    )
+    feature = config.features(falling, falling[-1].available_ns)
+    assert feature is not None and feature.trend_distance < 0 and feature.fast_return < 0
+    assert propose(config, feature, now_ns=falling[-1].available_ns, holding=False) is None
+    noisy_builder = BtcIntervals(started_ns=0)
+    noisy = tuple(
+        row
+        for hour in range(74)
+        for row in noisy_builder.accept(trade(hour, str(100 + hour + (30 if hour % 2 == 0 else 0))))
+    )
+    feature = config.features(noisy, noisy[-1].available_ns)
+    assert feature is not None and feature.volatility > config.maximum_volatility
+    assert propose(config, feature, now_ns=noisy[-1].available_ns, holding=False) is None

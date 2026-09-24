@@ -87,11 +87,88 @@ BTCUSD is normalized to BTC/USD only with explicit provider crypto asset class.
 Existing request and asset serialization is unchanged; new subtypes have distinct
 codec tags.
 
-## Composition status
+## Independent BTC risk foundation
 
-There is no BTC PAPER CLI or BTC dispatcher. The equity v4 journal embeds the
-existing equity RiskDecision and clock in each attempt; it does not yet persist
-BTC risk evidence or completed-close/high-water lifecycle history. The reducer
-tests use typed synthetic attempts, not an equity decision as BTC authority.
-The adapter's submit method remains a transport seam requiring a guarded caller.
-No external PAPER order was sent during implementation.
+`evaluate_btc_risk` recomputes reconciliation and strategy features from supplied
+immutable evidence. Entry needs FLAT, BUY, BTC/USD, current tradable asset and
+legal quantity, fresh usable quote/strategy/broker/control evidence, configured
+cost and volatility filters, explicit trading enablement and a clear kill switch.
+Quantity and notional ceilings are explicit caller-supplied `BtcRiskPolicy`
+parameters, with no trading-enabling policy defaults. Every policy field binds
+its identity. Risk uses a current `BtcCashAccount`: available cash is the lesser
+of cash and non-marginable buying power, never equity margin buying power.
+The entry cash estimate is ask*quantity*(1+taker_fee+slippage_allowance)+cash_buffer.
+The ask already includes the observed quote spread. This is an eligibility
+estimate, not a guaranteed MARKET price ceiling. Both account eligibility and
+explicit crypto eligibility must be established.
+
+Exit needs HOLDING, SELL, a legal quantity no greater than linked broker exposure,
+and complete unique execution evidence whose per-order sums match cumulative
+fills. The current entry time is reconstructed from the first execution after
+flat, not the submission time. Every completed close since that time is required
+for high-water reconstruction. Missing fills, replacement chronology, conflicting
+same-time sides or incomplete close history reject. An independent risk-halt
+input may request an exit, but the kill switch and disabled trading freeze all
+automation, including exits. ENTRY_PENDING, EXIT_PENDING, UNRESOLVED and HALTED
+cannot authorize a proposal. Any previously uncertain attempt freezes evaluation
+of new submissions even if later order evidence would project HOLDING.
+
+Evaluations are typed serializable evidence, not dispatch capabilities. Tests
+round-trip canonical close/fill evidence through a file and reproduce exit
+calculations. This proves deterministic reconstruction from supplied evidence,
+not application restart acceptance or correct provider fill ingestion.
+
+## Composition status and blockers
+
+**This is a partial foundation, not the requested end-to-end BTC PAPER loop.**
+There is no `shadow-crypto-paper` CLI, BTC dispatcher, or runnable BTC command.
+No external PAPER order was sent during implementation. Existing SPY dispatch
+and sealed P1B research identity are unchanged.
+
+The remaining dependencies are concrete:
+
+1. The adapter has cumulative order fills, but `read_updates` explicitly returns
+   unavailable. It does not collect complete execution events with execution
+   timestamps, corrections, and fee adjustments. The risk foundation requires
+   complete linked fill evidence for lifecycle-backed exits.
+2. Alpaca documents fees in the received asset and potentially delayed CFEE/FEE
+   activities. Therefore raw BTC buy fills need not equal net broker BTC exposure.
+   This reducer deliberately HALTs that mismatch. A verified normalized net-fill
+   contract and complete activity collection are required; fee amounts must never
+   be guessed from the strategy's cost assumptions. The provider's exact PAPER
+   behavior has not been empirically verified in this sprint.
+3. The existing v4 SQLite journal embeds equity RiskDecision/clock values per
+   attempt. The codec can serialize BTC values, but BTC admission, configuration
+   binding, durable close/fill history, persistent halt state, submission ceilings,
+   and recovery verification are not composed into that journal.
+4. A BTC dispatcher must consume only fresh independent authorization, commit
+   before one POST, forbid replay of an attempted intent, then reconcile before
+   continuation. Existing equity no-duplicate tests do not establish BTC behavior.
+5. C1 capture is bounded to one hour; verified multi-day BTC history/warm-start
+   composition is absent. Raw-trade history must supply the 73 contiguous
+   completed canary intervals without substituting provider bars or filling gaps.
+
+Consequently restart FLAT/HOLDING/pending/unresolved/halted dispatch invariants,
+BTC no-duplicate POST, bounded submission counts, and a live evidence-to-order
+round trip remain unverified. Reducer states and pure risk rejections are tested,
+including uncertainty freeze and fractional equity regression coverage. A future
+application must persist and recover the same evidence before claiming restart
+acceptance. PAPER performance never proves profitability; no live-capital endpoint
+or support is provided.
+
+## Verification receipt for this implementation
+
+- New BTC focused suites: 39 passed (8 strategy, 11 execution, 20 risk).
+- Execution checkpoint including existing broker/journal/reducer suites: 236 passed.
+- Risk checkpoint including existing equity risk/adversarial/dispatch suites: 200 passed.
+- Final canonical pytest: 982 passed. Four existing localhost relay tests initially
+  failed under socket-restricted sandboxing; the full rerun with localhost access
+  passed. This was an environment restriction, not a product regression.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: 134 files passed.
+- `uv run mypy src tests`: 104 source files passed.
+- `git diff --check`: passed.
+- `UV_CACHE_DIR=/tmp/shadow-uv-cache` was used because the default cache was read-only.
+- No real PAPER or live-capital order was submitted. No empirical strategy,
+  provider fee normalization, BTC application restart, or profitability acceptance
+  is claimed by these automated receipts.

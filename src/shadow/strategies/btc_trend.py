@@ -143,6 +143,23 @@ class BtcProposal:
     round_trip_cost: Decimal
     safety_margin: Decimal
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.action, BtcAction) or not isinstance(
+            self.features, BtcTrendFeatures
+        ):
+            raise ValueError("typed BTC proposal required")
+        if not self.reason or len(self.configuration_id) != 64:
+            raise ValueError("proposal identity/reason required")
+        for amount in (self.round_trip_cost, self.safety_margin):
+            if not isinstance(amount, Decimal) or not amount.is_finite() or amount < 0:
+                raise ValueError("finite nonnegative cost evidence required")
+        if self.high_water_mark is not None and (
+            not isinstance(self.high_water_mark, Decimal)
+            or not self.high_water_mark.is_finite()
+            or self.high_water_mark <= 0
+        ):
+            raise ValueError("invalid high water mark")
+
 
 def high_water_since_entry(
     intervals: tuple[CompletedBtcInterval, ...],

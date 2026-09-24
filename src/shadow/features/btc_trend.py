@@ -102,6 +102,23 @@ class BtcTrendFeatures:
     fast_return: Decimal
     volatility: Decimal
 
+    def __post_init__(self) -> None:
+        UtcNanoseconds(self.end_ns)
+        UtcNanoseconds(self.available_ns)
+        if self.end_ns > self.available_ns:
+            raise ValueError("feature availability precedes interval end")
+        for value in (
+            self.close,
+            self.baseline,
+            self.trend_distance,
+            self.fast_return,
+            self.volatility,
+        ):
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ValueError("finite Decimal feature values required")
+        if self.close <= 0 or self.baseline <= 0 or self.volatility < 0:
+            raise ValueError("invalid price or return volatility")
+
 
 def trend_features(
     intervals: tuple[CompletedBtcInterval, ...],

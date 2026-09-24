@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from shadow.domain.market import Instrument
 from shadow.execution.broker import (
+    BrokerAccount,
     BrokerAsset,
     BrokerContractError,
     Eligibility,
@@ -83,6 +84,24 @@ class BtcBrokerAsset(BrokerAsset):
             and (qn * stepd) % (qd * stepn) == 0
             and ((qn * md - mn * qd) * stepd) % (qd * md * stepn) == 0
         )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BtcCashAccount(BrokerAccount):
+    """Cash-limited crypto account evidence, separate from equity buying power."""
+
+    available_cash: Decimal
+    crypto_trading: Eligibility
+
+    def __post_init__(self) -> None:
+        super(BtcCashAccount, self).__post_init__()
+        if (
+            not isinstance(self.available_cash, Decimal)
+            or not self.available_cash.is_finite()
+            or self.available_cash < 0
+            or not isinstance(self.crypto_trading, Eligibility)
+        ):
+            raise BrokerContractError("nonnegative cash and explicit crypto eligibility required")
 
 
 def execution_asset(request: SubmitRequest) -> ExecutionAsset:

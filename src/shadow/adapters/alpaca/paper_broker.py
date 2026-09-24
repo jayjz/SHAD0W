@@ -38,7 +38,7 @@ from shadow.execution.broker import (
     SubmitRequest,
     TradeUpdate,
 )
-from shadow.execution.crypto import BtcBrokerAsset, BtcSubmitRequest
+from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount, BtcSubmitRequest
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 
 PAPER_TRADING_ORIGIN = "https://paper-api.alpaca.markets"
@@ -290,6 +290,14 @@ class AlpacaPaperBroker:
             raise AlpacaPaperError("malformed PAPER order row") from exc
 
     def read_account(self) -> BrokerAccount | BrokerError:
+        return self._read_account(btc=False)
+
+    def read_btc_account(self) -> BtcCashAccount | BrokerError:
+        result = self._read_account(btc=True)
+        assert isinstance(result, (BtcCashAccount, BrokerError))
+        return result
+
+    def _read_account(self, *, btc: bool) -> BrokerAccount | BrokerError:
         response, received = self._call("GET", "/v2/account")
         if response.status != 200:
             return self._error(response, received, "account")
@@ -318,6 +326,29 @@ class AlpacaPaperBroker:
                 if not blocked and status in {"active", "approved", "paper_only"}
                 else Eligibility.INELIGIBLE
             )
+            if btc:
+                cash = min(
+                    _decimal(payload["cash"]), _decimal(payload["non_marginable_buying_power"])
+                )
+                crypto_eligible = (
+                    payload.get("crypto_status") == "ACTIVE"
+                    and payload.get("trading_blocked") is False
+                    and payload.get("account_blocked") is False
+                )
+                return BtcCashAccount(
+                    self._evidence(
+                        _request_id(response.headers) or "alpaca:btc-account", received, received
+                    ),
+                    OrderTarget.PAPER,
+                    eligible,
+                    cash,
+                    str(payload.get("currency", "")),
+                    provider_account_id,
+                    available_cash=cash,
+                    crypto_trading=Eligibility.ELIGIBLE
+                    if crypto_eligible
+                    else Eligibility.INELIGIBLE,
+                )
             return BrokerAccount(
                 self._evidence(
                     _request_id(response.headers) or "alpaca:account", received, received
@@ -328,7 +359,7 @@ class AlpacaPaperBroker:
                 str(payload.get("currency", "USD")),
                 provider_account_id,
             )
-        except (KeyError, AlpacaPaperError) as exc:
+        except (KeyError, ValueError, AlpacaPaperError) as exc:
             return BrokerError(
                 self._evidence("alpaca:account:malformed", received, received),
                 ErrorCategory.MALFORMED,

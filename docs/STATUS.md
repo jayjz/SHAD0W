@@ -10,7 +10,10 @@ implementation claim.
   trend/momentum/volatility features, cost-aware long/cash proposals and high-water
   reconstruction. The [engineering configuration](BTC_TREND_PAPER_CONTRACT.md) is
   unvalidated. Typed BTC MARKET/GTC transport and exact fractional reconciliation
-  are tested with fake broker evidence; no BTC application is composed.
+  are tested with fake broker evidence. Independent BTC cash-limited risk
+  evaluation recomputes features/lifecycle and rejects missing exit fill history.
+  No BTC application is composed; see the contract for fee normalization,
+  durable journal and multi-day warm-start blockers.
 
 - **Crypto C0:** provider-neutral BTC/USD and ETH/USD trade/quote/book event values,
   exact UTC nanosecond times, validation tests and the
