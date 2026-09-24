@@ -6,9 +6,15 @@ import hashlib
 import json
 from dataclasses import dataclass, fields
 from decimal import Decimal
+from enum import StrEnum
 
 from shadow.execution.crypto import BtcSubmitRequest
 from shadow.strategies.btc_trend import BtcProposal, BtcTrendConfig
+
+
+class BtcLifecycleAuthority(StrEnum):
+    PROOF = "proof"
+    INITIAL_EXPERIMENT = "initial_experiment"
 
 
 @dataclass(frozen=True, slots=True)

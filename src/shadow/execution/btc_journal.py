@@ -152,7 +152,10 @@ class BtcJournal:
         events = self.journal.btc_events()
         if not events or events[-1][1] != "reconcile":
             return False
-        value = events[-1][2]
+        return self._pristine_experiment_reconciliation(events[-1][2])
+
+    @staticmethod
+    def _pristine_experiment_reconciliation(value: object) -> bool:
         return (
             isinstance(value, tuple)
             and len(value) == 2
@@ -179,7 +182,27 @@ class BtcJournal:
 
     def _validate_attempt(self, attempt: BtcAttempt) -> None:
         config = self.config
-        if config is None or self.halted or not self.execution_authority_ready:
+        events = self.journal.btc_events()
+        latest_reconciliation = events[-1][2] if events and events[-1][1] == "reconcile" else None
+        if (
+            len(events) >= 2
+            and events[-1][1] == "attempt"
+            and events[-1][2] == attempt
+            and events[-2][1] == "reconcile"
+        ):
+            latest_reconciliation = events[-2][2]
+        pristine_initial_authority = not self.attempts and (
+            self._pristine_experiment_reconciliation(latest_reconciliation)
+            or (
+                self.reconciliation is not None
+                and self.reconciliation.state is OperationalState.UNRESOLVED
+                and self.reconciliation.reason == "activity history unproven"
+                and self._pristine_experiment_reconciliation(
+                    (attempt.revalidation.snapshot, attempt.revalidation.activities)
+                )
+            )
+        )
+        if config is None or self.halted or not (self.usable or pristine_initial_authority):
             raise JournalError("BTC authority not ready")
         if attempt.submission is not None:
             raise JournalError("attempt must start without submission result")

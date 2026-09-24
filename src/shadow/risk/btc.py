@@ -14,7 +14,7 @@ from shadow.execution.crypto_accounting import CryptoActivityEvidence, inventory
 from shadow.execution.journal import CommittedAttempt
 from shadow.execution.reconciliation import OperationalState, Reconciliation, reconcile
 from shadow.features.btc_trend import BTC, BTC_CONTEXT, CompletedBtcInterval
-from shadow.risk.btc_models import BtcRiskEvaluation, BtcRiskPolicy
+from shadow.risk.btc_models import BtcLifecycleAuthority, BtcRiskEvaluation, BtcRiskPolicy
 from shadow.risk.models import OperatorControls, OrderSide
 from shadow.strategies.btc_trend import (
     BtcAction,
@@ -126,6 +126,7 @@ def evaluate_btc_risk(
     independent_risk_halt: bool = False,
     crypto_evidence: CryptoActivityEvidence | None = None,
     require_crypto_evidence: bool = False,
+    lifecycle_authority: BtcLifecycleAuthority = BtcLifecycleAuthority.PROOF,
 ) -> BtcRiskEvaluation:
     """Recompute lifecycle/features; proposals cannot declare their own authority."""
     UtcNanoseconds(now_ns)
@@ -139,6 +140,25 @@ def evaluate_btc_risk(
         crypto_evidence=crypto_evidence,
         require_crypto_evidence=require_crypto_evidence,
     )
+    experiment_lifecycle = (
+        lifecycle_authority is BtcLifecycleAuthority.INITIAL_EXPERIMENT
+        and not attempts
+        and crypto_evidence is not None
+        and state.state is OperationalState.UNRESOLVED
+        and state.reason == "activity history unproven"
+        and crypto_evidence.query_exhausted
+        and not crypto_evidence.history_verified
+        and not crypto_evidence.executions
+        and not crypto_evidence.fees
+        and not crypto_evidence.unsupported
+        and snapshot.complete
+        and snapshot.positions_complete
+        and snapshot.orders_complete
+        and not snapshot.positions
+        and not snapshot.orders
+    )
+    if lifecycle_authority is BtcLifecycleAuthority.INITIAL_EXPERIMENT and not experiment_lifecycle:
+        reasons.append("invalid_initial_experiment_lifecycle")
     if any(
         attempt.submission is None or attempt.submission.status is SubmissionStatus.UNCERTAIN
         for attempt in attempts
@@ -207,7 +227,9 @@ def evaluate_btc_risk(
         reasons.append("cost_assumption_mismatch")
     with localcontext(BTC_CONTEXT):
         if proposal.action is BtcAction.ENTER:
-            if state.state is not OperationalState.FLAT or request.side is not OrderSide.BUY:
+            if (
+                state.state is not OperationalState.FLAT and not experiment_lifecycle
+            ) or request.side is not OrderSide.BUY:
                 reasons.append("entry_requires_flat")
             if independent_risk_halt:
                 reasons.append("independent_risk_halt")

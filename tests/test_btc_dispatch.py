@@ -18,13 +18,14 @@ from shadow.execution.broker import (
     SubmitRequest,
 )
 from shadow.execution.btc_authority import BtcAttempt
-from shadow.execution.btc_dispatch import BtcBroker, BtcDispatcher
+from shadow.execution.btc_dispatch import BtcBroker, BtcDispatchAuthority, BtcDispatcher
 from shadow.execution.btc_journal import BtcJournal
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount
 from shadow.execution.crypto_accounting import CryptoActivityEvidence
 from shadow.execution.dispatch import DispatchHalted
 from shadow.execution.journal import ExecutionJournal
 from shadow.execution.reconciliation import OperationalState, Reconciliation
+from shadow.risk.btc_models import BtcLifecycleAuthority
 from tests.test_btc_journal import authority
 from tests.test_btc_journal import journal as journal
 from tests.test_paper_reconciliation import NOW
@@ -143,6 +144,109 @@ def execute(dispatcher: BtcDispatcher, attempt: BtcAttempt) -> SubmissionResult 
         dispatch_deadline=attempt.dispatch_deadline,
         expected_revision=dispatcher.store.revision,
     )
+
+
+def test_pristine_experiment_reaches_guarded_submit_and_is_spent(journal: ExecutionJournal) -> None:
+    from shadow.execution.btc_classification import (
+        AuthorityClassification,
+        classify_btc_authority,
+        proof_reconcile,
+    )
+    from shadow.risk.btc import evaluate_btc_risk, utc_ns
+
+    config, attempt = authority()
+    store = BtcJournal(journal)
+    store.configure(config)
+    activities = replace(
+        attempt.revalidation.activities, history_verified=False, coverage_reference=None
+    )
+    broker = FakeBtcBroker(
+        store, replace(attempt, revalidation=replace(attempt.revalidation, activities=activities))
+    )
+    dispatcher = BtcDispatcher(
+        broker=broker,
+        journal=store,
+        now=lambda: NOW + timedelta(microseconds=1),
+        controls=lambda: broker.attempt.revalidation.controls,
+        market=lambda: (broker.attempt.revalidation.intervals, broker.attempt.revalidation.quote),
+    )
+    assert dispatcher.recover().state is OperationalState.UNRESOLVED
+    assert not store.usable and store.execution_authority_ready
+    strict = proof_reconcile(
+        attempts=(), snapshot=broker.attempt.revalidation.snapshot, activities=activities
+    )
+    classified = classify_btc_authority(
+        account=broker.attempt.revalidation.account,
+        asset=broker.attempt.revalidation.asset,
+        snapshot=broker.attempt.revalidation.snapshot,
+        activities=activities,
+        strict_lifecycle=strict,
+        account_binding=(attempt.request.account_id, attempt.request.operational_scope),
+        journal_usable=store.execution_authority_ready,
+        risk_fresh=True,
+        unresolved_prior_intent=False,
+    )
+    assert classified.classification is AuthorityClassification.EXPERIMENT_READY
+    assert classified.proof_status is AuthorityClassification.BLOCKED
+    risk = evaluate_btc_risk(
+        policy=attempt.evaluation.policy,
+        config=attempt.evaluation.config,
+        proposal=attempt.evaluation.proposal,
+        request=attempt.evaluation.request,
+        intervals=broker.attempt.revalidation.intervals,
+        quote=broker.attempt.revalidation.quote,
+        account=broker.attempt.revalidation.account,
+        asset=broker.attempt.revalidation.asset,
+        snapshot=broker.attempt.revalidation.snapshot,
+        attempts=(),
+        controls=broker.attempt.revalidation.controls,
+        now_ns=utc_ns(NOW + timedelta(microseconds=1)),
+        crypto_evidence=activities,
+        require_crypto_evidence=True,
+        lifecycle_authority=BtcLifecycleAuthority.INITIAL_EXPERIMENT,
+    )
+    assert risk.authorized
+    broker.attempt = replace(broker.attempt, evaluation=risk)
+    result = dispatcher.execute(
+        risk,
+        dispatch_deadline=attempt.dispatch_deadline,
+        expected_revision=store.revision,
+        authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+    )
+    assert isinstance(result, SubmissionResult) and broker.posts == 1
+    assert store.attempts[0].submission == result
+    assert not store.usable and not store.execution_authority_ready
+    second = dispatcher.execute(
+        risk,
+        dispatch_deadline=attempt.dispatch_deadline,
+        expected_revision=store.revision,
+        authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+    )
+    assert isinstance(second, Reconciliation) and second.state is OperationalState.UNRESOLVED
+    assert broker.posts == 1
+    journal.close()
+    with ExecutionJournal.reopen(
+        path=journal.path,
+        owner=journal._owner,
+        account_id="paper-account",
+        operational_scope="scope",
+    ) as reopened:
+        restarted_store = BtcJournal(reopened)
+        restarted = BtcDispatcher(
+            broker=broker,
+            journal=restarted_store,
+            now=lambda: NOW + timedelta(microseconds=1),
+            controls=dispatcher.controls,
+            market=dispatcher.market,
+        )
+        state = restarted.execute(
+            risk,
+            dispatch_deadline=attempt.dispatch_deadline,
+            expected_revision=restarted_store.revision,
+            authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+        )
+        assert isinstance(state, Reconciliation)
+        assert broker.posts == 1
 
 
 def test_authorized_commit_precedes_exactly_one_post(journal: ExecutionJournal) -> None:

@@ -4,6 +4,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol
 
 from shadow.adapters.alpaca.paper_identity import derive_paper_client_order_identity
@@ -18,6 +19,7 @@ from shadow.execution.broker import (
     SubmitRequest,
 )
 from shadow.execution.btc_authority import BtcAttempt, BtcRevalidation, btc_intent_identity
+from shadow.execution.btc_classification import AuthorityClassification, classify_btc_authority
 from shadow.execution.btc_journal import BtcJournal
 from shadow.execution.crypto import BtcBrokerAsset, BtcCashAccount
 from shadow.execution.crypto_accounting import CryptoActivityEvidence
@@ -25,7 +27,7 @@ from shadow.execution.dispatch import DispatchHalted
 from shadow.execution.reconciliation import Reconciliation, reconcile
 from shadow.features.btc_trend import CompletedBtcInterval
 from shadow.risk.btc import evaluate_btc_risk, utc_ns
-from shadow.risk.btc_models import BtcRiskEvaluation
+from shadow.risk.btc_models import BtcLifecycleAuthority, BtcRiskEvaluation
 from shadow.risk.models import OperatorControls
 
 
@@ -45,6 +47,11 @@ class BtcBroker(Protocol):
     def submit(
         self, request: SubmitRequest, *, before_post: Callable[[], None] | None = None
     ) -> SubmissionResult: ...
+
+
+class BtcDispatchAuthority(StrEnum):
+    PROOF = "proof"
+    INITIAL_EXPERIMENT = "initial_experiment"
 
 
 class BtcDispatcher:
@@ -142,6 +149,7 @@ class BtcDispatcher:
         dispatch_deadline: datetime,
         expected_revision: int,
         independent_risk_halt: bool = False,
+        authority: BtcDispatchAuthority = BtcDispatchAuthority.PROOF,
     ) -> SubmissionResult | Reconciliation:
         self._held()
         if self._busy:
@@ -169,7 +177,11 @@ class BtcDispatcher:
                 self.store.journal.has_legacy_halts()
                 or not self._recovered
                 or self.store.halted
-                or not self.store.usable
+                or not (
+                    self.store.usable
+                    if authority is BtcDispatchAuthority.PROOF
+                    else self.store.execution_authority_ready
+                )
                 or self.store.revision != expected_revision
             ):
                 raise DispatchHalted("BTC startup/halt/reconciliation revision guard")
@@ -180,6 +192,29 @@ class BtcDispatcher:
             ):
                 raise DispatchHalted("BTC risk authorization expired or unauthorized")
             account, asset, snapshot, activities = self._cut()
+            strict_state = reconcile(
+                attempts=self.store.attempts,
+                snapshot=snapshot,
+                crypto_evidence=activities,
+                require_crypto_evidence=True,
+            )
+            if authority is BtcDispatchAuthority.INITIAL_EXPERIMENT:
+                classified = classify_btc_authority(
+                    account=account,
+                    asset=asset,
+                    snapshot=snapshot,
+                    activities=activities,
+                    strict_lifecycle=strict_state,
+                    account_binding=(
+                        self.store.journal.identity.account_id,
+                        self.store.journal.identity.operational_scope,
+                    ),
+                    journal_usable=self.store.execution_authority_ready,
+                    risk_fresh=True,
+                    unresolved_prior_intent=bool(self.store.attempts),
+                )
+                if classified.classification is not AuthorityClassification.EXPERIMENT_READY:
+                    raise DispatchHalted("BTC experiment classification rejected")
             intervals, quote = self.market()
             controls = self.controls()
             fresh = evaluate_btc_risk(
@@ -199,6 +234,11 @@ class BtcDispatcher:
                 independent_risk_halt=independent_risk_halt,
                 crypto_evidence=activities,
                 require_crypto_evidence=True,
+                lifecycle_authority=(
+                    BtcLifecycleAuthority.INITIAL_EXPERIMENT
+                    if authority is BtcDispatchAuthority.INITIAL_EXPERIMENT
+                    else BtcLifecycleAuthority.PROOF
+                ),
             )
             if not fresh.authorized:
                 raise DispatchHalted("BTC revalidation rejected: " + ",".join(fresh.reasons))
@@ -209,8 +249,14 @@ class BtcDispatcher:
                 crypto_evidence=activities,
                 require_crypto_evidence=True,
             )
-            if fresh_state != self.store.reconciliation:
+            if authority is BtcDispatchAuthority.PROOF and fresh_state != self.store.reconciliation:
                 raise DispatchHalted("BTC lifecycle changed since reconciliation")
+            if authority is BtcDispatchAuthority.INITIAL_EXPERIMENT and (
+                strict_state != self.store.reconciliation
+                or self.store.usable
+                or self.store.attempts
+            ):
+                raise DispatchHalted("BTC experiment lifecycle changed since reconciliation")
             policy = evaluation.policy
             expiry_ns = min(
                 evaluation.evaluated_ns + 30_000_000_000,
