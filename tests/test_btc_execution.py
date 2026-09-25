@@ -156,6 +156,8 @@ def test_constraints_are_current_evidence_and_context_independent() -> None:
     for payload in (
         dict(asset_payload(), min_trade_increment=None),
         dict(asset_payload(), min_order_size="NaN"),
+        dict(asset_payload(), min_order_size="not-a-number"),
+        dict(asset_payload(), min_order_size="0"),
     ):
         transport = RecordingTransport([response(200, payload)])
         broker = AlpacaPaperBroker(
@@ -167,6 +169,23 @@ def test_constraints_are_current_evidence_and_context_independent() -> None:
         assert isinstance(broker.read_btc_asset(), BrokerError)
     assert not replace(asset(), tradable=Eligibility.INELIGIBLE).accepts_quantity(Decimal("0.0012"))
     assert not replace(asset(), fractionable=False).accepts_quantity(Decimal("0.0012"))
+
+
+def test_documented_usd_minimum_is_rounded_only_for_validation_on_provider_grid() -> None:
+    live_constraints = replace(
+        asset(),
+        minimum_order_size=Decimal("0.000011832"),
+        minimum_trade_increment=Decimal("0.000000001"),
+        price_increment=Decimal("0.000000001"),
+    )
+    boundary = live_constraints.minimum_quantity_at_price(Decimal("84480.433"))
+    assert boundary > live_constraints.minimum_order_size
+    assert boundary * Decimal("84480.433") >= Decimal("10")
+    assert live_constraints.accepts_quantity(boundary)
+    assert live_constraints.minimum_quantity_at_price(Decimal("84480.433")) == boundary
+    assert live_constraints.accepts_quantity(boundary + Decimal("0.000000001"))
+    with pytest.raises(BrokerContractError):
+        live_constraints.minimum_quantity_at_price(Decimal("NaN"))
 
 
 def test_btc_fractional_lifecycle_and_uncertainty(tmp_path: Path) -> None:

@@ -25,6 +25,17 @@ ceiling applies to the ask-price entry estimate; MARKET execution cannot promise
 an absolute realized price ceiling. An existing kill-switch file disables all
 submissions, including SELL. Each mode requires explicit duration and PAPER origin.
 
+For Alpaca USD crypto pairs, the current provider documentation defines the
+minimum quantity as `$10 / USD asset price`; the live asset endpoint also returns
+`min_order_size` and `min_trade_increment`. Entry risk uses the greater of the
+asset minimum and the documented USD-derived minimum at the fresh ask, then
+requires the explicitly configured quantity to satisfy the provider increment
+and nine-decimal grid. This is validation only: SHAD0W never rounds an order
+quantity to make it legal. The adapter metadata and documented formula can
+disagree; the larger minimum governs. The live sizing artifact records both
+values and the observed quote. See Alpaca's [crypto trading constraints](https://docs.alpaca.markets/us/docs/crypto-trading-1)
+and [asset API](https://docs.alpaca.markets/us/reference/get-v2-assets-symbol_or_asset_id).
+
 Order/position/activity polling occurs at startup, after submission, as subsequent
 market events arrive, and at session end. Pending orders prohibit another proposal.
 The final reconciliation remains available even if the session deadline expired.

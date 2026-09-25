@@ -276,6 +276,34 @@ def test_pristine_experiment_reaches_guarded_submit_and_is_spent(journal: Execut
         assert broker.posts == 1
 
 
+def test_quote_move_that_raises_usd_minimum_blocks_before_attempt_and_post(
+    journal: ExecutionJournal,
+) -> None:
+    dispatcher, broker, attempt = initial_experiment_setup(journal)
+    broker.attempt = replace(
+        broker.attempt,
+        revalidation=replace(
+            broker.attempt.revalidation,
+            quote=replace(
+                broker.attempt.revalidation.quote,
+                bid_price=Decimal("9999"),
+                ask_price=Decimal("10000"),
+            ),
+        ),
+    )
+    store = BtcJournal(journal)
+    with pytest.raises(DispatchHalted, match="revalidation rejected"):
+        dispatcher.execute(
+            attempt.evaluation,
+            dispatch_deadline=attempt.dispatch_deadline,
+            expected_revision=store.revision,
+            authority=BtcDispatchAuthority.INITIAL_EXPERIMENT,
+        )
+    assert BtcJournal(journal).attempts == ()
+    assert broker.posts == 0
+    journal.close()
+
+
 @pytest.mark.parametrize(
     "failure",
     [

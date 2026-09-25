@@ -63,12 +63,12 @@ def inputs() -> dict[str, Any]:
         ),
         config=config,
         proposal=signal,
-        request=btc_request(),
+        request=replace(btc_request(), quantity=Decimal("0.0005")),
         intervals=intervals,
         quote=CryptoQuote(
             BTC,
-            Decimal(172),
-            Decimal(173),
+            Decimal(172_000),
+            Decimal(173_000),
             Decimal(1),
             Decimal(1),
             UtcNanoseconds(now_ns),
@@ -102,6 +102,48 @@ def test_entry_authorized_only_from_recomputed_flat_evidence() -> None:
         features=replace(values["proposal"].features, trend_distance=Decimal(100)),
     )
     assert "invalid_strategy_evidence" in evaluate_btc_risk(**values).reasons
+
+
+def test_usd_crypto_minimum_uses_stricter_provider_and_documented_floor() -> None:
+    values = inputs()
+    values["asset"] = replace(
+        values["asset"],
+        minimum_order_size=Decimal("0.000011832"),
+        minimum_trade_increment=Decimal("0.000000001"),
+        price_increment=Decimal("0.000000001"),
+    )
+    values["quote"] = replace(
+        values["quote"], bid_price=Decimal("84458"), ask_price=Decimal("84480.433")
+    )
+    boundary = values["asset"].minimum_quantity_at_price(values["quote"].ask_price)
+    assert boundary > values["asset"].minimum_order_size
+    values["request"] = replace(values["request"], quantity=boundary)
+    assert evaluate_btc_risk(**values).authorized
+
+    one_increment_below = boundary - values["asset"].minimum_trade_increment
+    assert not evaluate_btc_risk(
+        **dict(values, request=replace(values["request"], quantity=one_increment_below))
+    ).authorized
+    one_increment_above = boundary + values["asset"].minimum_trade_increment
+    assert evaluate_btc_risk(
+        **dict(values, request=replace(values["request"], quantity=one_increment_above))
+    ).authorized
+
+    moved_down = replace(values["quote"], bid_price=Decimal("79999"), ask_price=Decimal("80000"))
+    rejected = evaluate_btc_risk(**dict(values, quote=moved_down))
+    assert not rejected.authorized
+    assert "invalid_quantity" in rejected.reasons
+
+
+def test_usd_crypto_minimum_still_obeys_entry_notional_ceiling() -> None:
+    values = inputs()
+    values["quote"] = replace(
+        values["quote"], bid_price=Decimal("84458"), ask_price=Decimal("84480.433")
+    )
+    too_large = replace(values["request"], quantity=Decimal("0.0012"))
+    result = evaluate_btc_risk(**dict(values, request=too_large))
+    assert not result.authorized
+    assert "cash_or_notional_limit" in result.reasons
 
 
 @pytest.mark.parametrize(

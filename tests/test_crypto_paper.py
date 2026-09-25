@@ -476,7 +476,7 @@ def _rising_sources(
 
     def historical(_start: int, _end: int) -> Iterator[tuple[CryptoTrade, ...]]:
         yield tuple(
-            _trade(value, Decimal(100 + index), HISTORICAL, boundary)
+            _trade(value, Decimal(100_000 + 1_000 * index), HISTORICAL, boundary)
             for index, value in enumerate(range(start, boundary, HOUR_NS))
         )
 
@@ -487,8 +487,8 @@ def _rising_sources(
         return (
             CryptoQuote(
                 BTC,
-                Decimal("174"),
-                Decimal("175"),
+                Decimal("174_000"),
+                Decimal("175_000"),
                 Decimal("1"),
                 Decimal("1"),
                 UtcNanoseconds(boundary + HOUR_NS + 1_000),
@@ -496,8 +496,8 @@ def _rising_sources(
                 AvailabilitySemantics.SYSTEM_RECEIVED,
                 Provenance(LIVE, "UTC"),
             ),
-            _trade(boundary, Decimal(174), LIVE, boundary),
-            _trade(boundary + HOUR_NS, Decimal(175), LIVE, boundary + HOUR_NS + 1_000),
+            _trade(boundary, Decimal(174_000), LIVE, boundary),
+            _trade(boundary + HOUR_NS, Decimal(175_000), LIVE, boundary + HOUR_NS + 1_000),
         )
 
     return historical, live

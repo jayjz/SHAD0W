@@ -183,7 +183,19 @@ def evaluate_btc_risk(
         reasons.append("non_btc_attempt")
     if request.instrument != BTC or quote.instrument != BTC or asset.instrument != BTC:
         reasons.append("instrument_mismatch")
-    if not asset.accepts_quantity(request.quantity) or request.quantity > policy.maximum_quantity:
+    provider_minimum_valid = True
+    if proposal.action is BtcAction.ENTER:
+        try:
+            provider_minimum = asset.minimum_quantity_at_price(quote.ask_price)
+        except (ArithmeticError, ValueError):
+            provider_minimum_valid = False
+        else:
+            provider_minimum_valid = request.quantity >= provider_minimum
+    if (
+        not asset.accepts_quantity(request.quantity)
+        or not provider_minimum_valid
+        or request.quantity > policy.maximum_quantity
+    ):
         reasons.append("invalid_quantity")
     if (
         account.eligibility is not Eligibility.ELIGIBLE
