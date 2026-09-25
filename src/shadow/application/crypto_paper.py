@@ -987,6 +987,8 @@ def main(*, session: bool = False) -> int:
                     args.duration_seconds,
                 )
                 payload = result if isinstance(result, dict) else result.payload()
+            if session:
+                payload["summary_path"] = str(args.experiment_evidence_path.absolute())
             args.experiment_evidence_path.parent.mkdir(parents=True, exist_ok=True)
             args.experiment_evidence_path.write_text(
                 json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"

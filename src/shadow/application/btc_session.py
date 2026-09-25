@@ -415,10 +415,18 @@ class BtcPaperSession(BtcPaperExperiment):
                 else:
                     for end in new_ends:
                         proposal = self._decision(end)
-                        if proposal is not None:
+                        if (
+                            proposal is not None
+                            and end == self.evidence.history.intervals[-1].end_ns
+                        ):
                             self._submit(proposal)
-                            break
             self._poll()
+            if (
+                len(self.store.attempts) == 2 and not self.store.halted
+                and self.store.reconciliation is not None
+                and self.store.reconciliation.state is OperationalState.FLAT
+            ):
+                self.stop_reason = "ROUND_TRIP_COMPLETE"
         except Exception as exc:
             self.stop_reason = "SESSION_HALTED"
             self.error = type(exc).__name__
@@ -447,6 +455,23 @@ class BtcPaperSession(BtcPaperExperiment):
             "intervals_evaluated": sum(d["end_ns"] is not None for d in decisions),
             "decisions": decisions,
             "committed_attempts": len(self.store.attempts),
+            "attempts": [
+                {
+                    "client_id": a.client_order_id,
+                    "side": a.request.side.value,
+                    "quantity": str(a.request.quantity),
+                    "submission_status": None
+                    if a.submission is None
+                    else a.submission.status.value,
+                    "error_category": None
+                    if a.submission is None or a.submission.error is None
+                    else a.submission.error.category.value,
+                    "provider_order_id": None
+                    if a.submission is None or a.submission.order is None
+                    else a.submission.order.order_id,
+                }
+                for a in self.store.attempts
+            ],
             "state": None if state is None else state.state.value,
             "reconciled_btc": None
             if state is None
@@ -485,6 +510,8 @@ class BtcPaperSession(BtcPaperExperiment):
                 {"symbol": p.instrument.identifier, "quantity": str(p.quantity)}
                 for p in snapshot.positions
             ],
+            "broker_observed_at": None if snapshot is None
+            else snapshot.evidence.availability_time.isoformat(),
             "fills": []
             if activities is None
             else [
@@ -502,7 +529,7 @@ class BtcPaperSession(BtcPaperExperiment):
                 if isinstance(row, tuple) and row[0] == "risk" and json.loads(row[1])["reasons"]
             ],
             "journal_path": str(self.journal.path),
-            "market_path": str(self.evidence.path),
+            "market_path": str(self.evidence.path) if self.evidence.path.exists() else None,
         }
         self._record("summary", payload)
         return payload

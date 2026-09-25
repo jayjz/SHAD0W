@@ -24,11 +24,12 @@ from shadow.execution.broker import (
 from shadow.execution.btc_journal import BtcJournal
 from shadow.execution.crypto import BtcSubmitRequest
 from shadow.execution.crypto_accounting import CryptoFeeActivity
+from shadow.execution.dispatch import DispatchHalted
 from shadow.execution.journal import ExecutionJournal
 from shadow.features.btc_trend import HOUR_NS
 from shadow.risk.btc import utc_ns
 from shadow.risk.models import OperatorControls, OrderSide
-from tests.test_btc_dispatch import SimulatedCrash
+from tests.test_btc_dispatch import SimulatedCrash, setup
 from tests.test_btc_journal import authority
 from tests.test_crypto_paper import _Clock, _FreshFake, _trade
 from tests.test_crypto_paper import journal as journal
@@ -358,3 +359,35 @@ def test_stale_quote_and_duplicate_client_id_fail_closed(
     assert result["unresolved"]
     assert result["stop_reason"] == "SESSION_HALTED"
     assert broker.posts == 2
+
+
+def test_probe_cannot_enable_unbounded_dispatch(journal: ExecutionJournal) -> None:
+    dispatcher, broker, attempt = setup(journal)
+    with pytest.raises(DispatchHalted, match="bounded session authority"):
+        dispatcher.execute(
+            attempt.evaluation,
+            dispatch_deadline=attempt.dispatch_deadline,
+            expected_revision=dispatcher.store.revision,
+            plumbing_probe=True,
+        )
+    assert broker.posts == 0
+
+
+@pytest.mark.parametrize("enabled,killed", [(False, False), (True, True)])
+def test_session_controls_block_all_submissions(
+    journal: ExecutionJournal, tmp_path: Path, enabled: bool, killed: bool
+) -> None:
+    runner, broker, clock = session(journal, tmp_path)
+    runner.controls = lambda: OperatorControls(enabled, killed, clock(), clock())
+    result = runner.run(lambda a, b: (), lambda duration: events(broker, clock), 60)
+    assert broker.posts == 0
+    assert ["operator_disabled"] in result["risk_rejections"]  # type: ignore[operator]
+
+
+def test_restart_never_extends_deadline(journal: ExecutionJournal, tmp_path: Path) -> None:
+    runner, broker, clock = session(journal, tmp_path)
+    runner.run(lambda a, b: (), lambda duration: (), 1)
+    clock.value += timedelta(seconds=2)
+    result = runner.run(lambda a, b: (), lambda duration: events(broker, clock), 60)
+    assert broker.posts == 0
+    assert result["live_quotes"] == 0
