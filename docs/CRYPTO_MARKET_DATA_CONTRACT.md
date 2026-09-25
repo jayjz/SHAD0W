@@ -75,6 +75,15 @@ delay**. It is not exchange latency or network latency. Clock accuracy, provider
 processing and buffering remain unknown. Nanosecond representation is not a claim
 of nanosecond accuracy.
 
+Local wall-clock receipt is the availability authority for `SYSTEM_RECEIVED`.
+If that receipt is earlier than provider `t`, the record is invalid. SHAD0W does
+not add a tolerance, clamp or rewrite provider `t`, or replace it with local time
+because the host NTP offset or jitter is large. An unsynchronized or unstable
+local clock is an operational failure: collection must fail closed until the host
+clock is a credible availability authority. Bounded read-only relay/consumer
+timing evidence may explain the failure. It is not trading input and cannot make
+a future observation legal.
+
 `session_id` identifies capture/run evidence only. It confers no causal or
 execution authority. Future records require contiguous local sequences from zero,
 connection epochs, frame sequences and element indices. Arrival order is retained;

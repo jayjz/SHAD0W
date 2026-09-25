@@ -20,6 +20,7 @@ shadow-crypto-capture = "shadow.application.crypto_capture:main"
 shadow-crypto-paper = "shadow.application.crypto_paper:main"
 shadow-btc-paper-session = "shadow.application.crypto_paper:session_main"
 shadow-crypto-feed-relay = "shadow.operations.alpaca_crypto_feed_relay:main"
+shadow-crypto-timing-observe = "shadow.operations.crypto_timing:main"
 
 [dependency-groups]
 dev = [

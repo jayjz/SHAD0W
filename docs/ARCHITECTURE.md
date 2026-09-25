@@ -164,3 +164,9 @@ The relay forwards allowed provider event objects without fabricating bars or
 rewriting provider timestamps. Historical REST recovery remains a separate
 read-only path. A relay socket loss closes downstream consumers as explicit
 market-data loss; it does not alter broker or paper-trading authority.
+
+Optional `shadow.crypto-timing.v1` JSONL is diagnostic only. It records raw
+provider `t`, the parsed observation integer, and distinct relay and consumer
+wall/monotonic receipt instants. It is not a domain timestamp and cannot
+authorize a future observation. `observation_time <= availability_time` remains
+fail-closed with no host-jitter tolerance.

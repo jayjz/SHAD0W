@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from websockets.asyncio.client import ClientConnection, connect
@@ -15,6 +17,12 @@ from shadow.operations.alpaca_crypto_feed_relay import (
     AlpacaCryptoFeedRelay,
     CryptoRelayCredentials,
     CryptoRelaySubscription,
+)
+from shadow.operations.crypto_timing import (
+    ReceiveClocks,
+    TimingEvidence,
+    join_timing,
+    load_timing_events,
 )
 
 
@@ -29,6 +37,9 @@ class _Connection:
         value = await self.received.get()
         if isinstance(value, BaseException):
             raise value
+        hook = self.upstream.on_receive_return
+        if hook is not None:
+            hook(value)
         return value
 
     async def send(self, message: str | bytes) -> None:
@@ -70,6 +81,7 @@ class _Upstream:
         self.acknowledge_subscriptions = True
         self.pre_ack_market_data: str | None = None
         self.close_with_receive_error = False
+        self.on_receive_return: Callable[[str], None] | None = None
 
     async def connect(self) -> _Connection:
         connection = _Connection(self)
@@ -89,13 +101,22 @@ async def _until(predicate: bool) -> None:
     raise AssertionError("condition did not become true")
 
 
-async def _relay(delay: float = 0) -> tuple[AlpacaCryptoFeedRelay, _Upstream, str]:
+async def _relay(
+    delay: float = 0,
+    *,
+    timing: TimingEvidence | None = None,
+    wall_ns: Callable[[], int] | None = None,
+    monotonic_ns: Callable[[], int] | None = None,
+) -> tuple[AlpacaCryptoFeedRelay, _Upstream, str]:
     upstream = _Upstream()
     relay = AlpacaCryptoFeedRelay(
         CryptoRelayCredentials("relay-key", "relay-secret"),
         port=0,
         upstream_connect=upstream.connect,
         reconnect_delay=lambda _: delay,
+        timing=timing,
+        wall_ns=wall_ns,
+        monotonic_ns=monotonic_ns,
     )
     await relay.start()
     for _ in range(100):
@@ -380,3 +401,106 @@ def test_slow_client_shutdown_and_localhost_only_lifecycle() -> None:
     asyncio.run(scenario())
     with pytest.raises(ValueError, match="127.0.0.1"):
         AlpacaCryptoFeedRelay(CryptoRelayCredentials("key", "secret"), host="0.0.0.0")
+
+
+def test_relay_receipt_is_after_provider_frame_and_frame_is_unchanged(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        order: list[str] = []
+        clock = {"wall": 1, "mono": 1}
+
+        def wall_ns() -> int:
+            order.append("wall")
+            return clock["wall"]
+
+        def monotonic_ns() -> int:
+            order.append("mono")
+            return clock["mono"]
+
+        evidence = TimingEvidence(
+            tmp_path / "relay.jsonl",
+            role="relay",
+            transport="provider_websocket",
+            max_events=4,
+            wall_ns=wall_ns,
+            host_diagnostics={"sources": [], "trading_authority": False},
+        )
+        relay, upstream, url = await _relay(
+            timing=evidence, wall_ns=wall_ns, monotonic_ns=monotonic_ns
+        )
+
+        def arm(value: str) -> None:
+            if value == _bar():
+                order.append("recv_done")
+                clock["wall"] = 5_000
+                clock["mono"] = 9_000
+
+        upstream.on_receive_return = arm
+        client = await _subscribe(url, {"action": "subscribe", "bars": [BTC_USD]})
+        try:
+            await upstream.emit(_bar())
+            assert await client.recv() == _bar()
+            done = order.index("recv_done")
+            assert order[done : done + 3] == ["recv_done", "wall", "mono"]
+        finally:
+            await client.close()
+            await relay.stop()
+            evidence.close()
+        events = load_timing_events(evidence.path)
+        text = evidence.path.read_text(encoding="utf-8")
+        assert len(events) == 1
+        assert events[0]["wall_receive_ns"] == 5_000
+        assert events[0]["monotonic_receive_ns"] == 9_000
+        assert events[0]["raw_provider_timestamp"] == "2026-09-24T12:00:00.000000000Z"
+        assert events[0]["trading_authority"] is False
+        assert "relay-secret" not in text
+        assert "relay-key" not in text
+
+    asyncio.run(scenario())
+
+
+def test_downstream_monotonic_receipt_is_not_before_relay_receipt(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        diagnostics = {"sources": [], "trading_authority": False}
+        relay_evidence = TimingEvidence(
+            tmp_path / "relay.jsonl",
+            role="relay",
+            transport="provider_websocket",
+            host_diagnostics=diagnostics,
+        )
+        consumer_evidence = TimingEvidence(
+            tmp_path / "consumer.jsonl",
+            role="consumer",
+            transport="downstream_relay_websocket",
+            host_diagnostics=diagnostics,
+        )
+        relay, upstream, url = await _relay(timing=relay_evidence)
+        quote = (
+            '[{"T":"q","S":"BTC/USD","t":"2020-01-01T00:00:00.000000000Z",'
+            '"bp":1,"ap":2,"bs":1,"as":1}]'
+        )
+        client = await _subscribe(url, {"action": "subscribe", "quotes": [BTC_USD]})
+        try:
+            for _ in range(100):
+                if len(upstream.connections[0].sent) == 3:
+                    break
+                await asyncio.sleep(0)
+            else:
+                raise AssertionError("relay did not add the quote subscription")
+            await upstream.emit(quote)
+            raw = await client.recv()
+            consumer_evidence.observe_frame(raw, ReceiveClocks.capture())
+            assert raw == quote
+        finally:
+            await client.close()
+            await relay.stop()
+            relay_evidence.close()
+            consumer_evidence.close()
+        joined = join_timing(
+            load_timing_events(relay_evidence.path), load_timing_events(consumer_evidence.path)
+        )
+        assert len(joined) == 1
+        assert joined[0].relay_to_consumer_monotonic_ns >= 0
+        assert joined[0].raw_provider_timestamp == "2020-01-01T00:00:00.000000000Z"
+        assert joined[0].parsed_observation_matches is True
+
+    asyncio.run(scenario())

@@ -68,6 +68,7 @@ implementation claim.
   account authority. The IEX relay remains separate from the crypto relay;
   `shadow-crypto-feed-relay` is the one-owner BTC/USD crypto stream relay on
   `127.0.0.1:8766`, with bounded downstream fanout and fail-closed reconnects.
+  Optional crypto timing JSONL is read-only evidence and is not trading input.
 - **Warm start:** a verified stopped capture can seed the trailing valid completed
   bars needed for a feature window. Historical seeds are not live-actionable bars;
   the first fresh live bar remains the only candidate trigger.

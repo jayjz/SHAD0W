@@ -135,3 +135,40 @@ and a separate service may run LIGHTLIGHT's `npm run btc:worker -- start` with
 `ALPACA_CRYPTO_LOCAL_FEED_URL`. Set `After=`/`Requires=` between the two units
 and configure restart backoff. Do not enable or start either user service until
 the host operator has reviewed its environment, ownership, and logs.
+
+## Read-only timing evidence
+
+Provider frames forwarded on `/` stay unchanged. Optional timing evidence is a
+separate JSONL file, schema `shadow.crypto-timing.v1`, and it has no trading
+authority. The relay samples wall and monotonic time only after the provider
+websocket receive returns. The BTC consumer samples those clocks only after its
+downstream receive returns. Those stamps are not `observation_time` or
+`availability_time`.
+
+```bash
+uv run shadow-crypto-feed-relay \
+  --timing-evidence /tmp/shadow-crypto-timing-relay.jsonl \
+  --timing-max-events 16 \
+  --code-revision "$(git rev-parse HEAD)"
+
+uv run shadow-crypto-timing-observe \
+  --relay ws://127.0.0.1:8766 \
+  --evidence-path /tmp/shadow-crypto-timing-consumer.jsonl \
+  --max-events 8 \
+  --timeout-seconds 20 \
+  --code-revision "$(git rev-parse HEAD)"
+
+uv run shadow-crypto-timing-observe --join \
+  --relay-evidence /tmp/shadow-crypto-timing-relay.jsonl \
+  --consumer-evidence /tmp/shadow-crypto-timing-consumer.jsonl
+```
+
+The observer only subscribes to fixed BTC/USD trades and quotes. It does not
+read broker credentials, submit an order, or enable trading. Stop it before
+stopping the relay. Delete the JSONL files when the inspection is done; do not
+feed them to the PAPER path.
+
+`observation_time <= availability_time` stays exact. A host whose NTP service is
+inactive, whose kernel clock is unsynchronized, or whose timesync offset/jitter
+is large relative to the provider lead cannot supply `SYSTEM_RECEIVED`
+availability. Fix the host clock. Do not loosen SHAD0W.

@@ -70,7 +70,10 @@ def _context(
     ):
         raise MarketDataValidationError("timestamp", "UtcNanoseconds required")
     if availability_time < observation_time:
-        raise MarketDataValidationError("availability_time", "must not precede observation_time")
+        raise MarketDataValidationError(
+            "availability_time",
+            "must not precede observation_time; local wall-clock authority may be insufficient",
+        )
     if availability_semantics is not AvailabilitySemantics.SYSTEM_RECEIVED:
         raise MarketDataValidationError("availability_semantics", "SYSTEM_RECEIVED required")
     if not isinstance(provenance, Provenance):

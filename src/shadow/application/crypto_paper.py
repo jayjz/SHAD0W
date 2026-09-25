@@ -53,6 +53,7 @@ from shadow.execution.dispatch import DispatchHalted
 from shadow.execution.journal import ExecutionJournal
 from shadow.execution.ownership import AccountOwner
 from shadow.features.btc_trend import BTC, HOUR_NS, BtcTrendFeatures, CompletedBtcInterval
+from shadow.operations.crypto_timing import ReceiveClocks, TimingEvidence
 from shadow.risk.btc import evaluate_btc_risk, utc_ns
 from shadow.risk.btc_models import BtcLifecycleAuthority, BtcRiskEvaluation, BtcRiskPolicy
 from shadow.risk.models import OperatorControls, OrderSide, OrderTarget, OrderType, TimeInForce
@@ -615,10 +616,18 @@ class _DirectLive(Iterator[CryptoTrade | CryptoQuote]):
         credentials: CryptoDataCredentials,
         duration_seconds: float,
         connect: Callable[..., Any],
+        *,
+        wall_ns: Callable[[], int] = time.time_ns,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        timing_evidence: TimingEvidence | None = None,
     ) -> None:
         self.credentials = credentials
         self.duration_seconds = duration_seconds
         self._connect = connect
+        self._wall_ns = wall_ns
+        self._monotonic_ns = monotonic_ns
+        self._timing = timing_evidence
+        self._strict_market_frame = False
         self._deadline: float | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._context: Any | None = None
@@ -652,6 +661,24 @@ class _DirectLive(Iterator[CryptoTrade | CryptoQuote]):
         if not isinstance(raw, (str, bytes)):
             raise PaperApplicationError("crypto stream returned invalid frame")
         return raw
+
+    def _collect(self, raw: str | bytes) -> None:
+        """Stamp receipt only after ``_receive`` returns, then preserve causal checks."""
+        clocks = ReceiveClocks.capture(self._wall_ns, self._monotonic_ns)
+        if self._timing is not None:
+            self._timing.observe_frame(raw, clocks)
+        received = UtcNanoseconds(clocks.wall_ns)
+        for frame in decode_frame(raw):
+            if frame.get("T") not in ("t", "q"):
+                if self._strict_market_frame:
+                    raise PaperApplicationError(
+                        "local crypto relay emitted a control or unsupported frame"
+                    )
+                continue
+            event = normalize(frame, received_at=received).event
+            if event.instrument == BTC:
+                assert isinstance(event, (CryptoTrade, CryptoQuote))
+                self._pending.append(event)
 
     def _protocol_frame(self) -> list[dict[str, object]]:
         raw = self._receive()
@@ -694,14 +721,7 @@ class _DirectLive(Iterator[CryptoTrade | CryptoQuote]):
             raw = self._receive()
             if raw is None:
                 raise StopIteration
-            received = UtcNanoseconds(time.time_ns())
-            for frame in decode_frame(raw):
-                if frame.get("T") not in ("t", "q"):
-                    continue
-                event = normalize(frame, received_at=received).event
-                if event.instrument == BTC:
-                    assert isinstance(event, (CryptoTrade, CryptoQuote))
-                    self._pending.append(event)
+            self._collect(raw)
 
     async def _shutdown(self) -> None:
         try:
@@ -730,6 +750,9 @@ def _direct_live(
     duration_seconds: float,
     *,
     connect: Callable[..., Any] | None = None,
+    wall_ns: Callable[[], int] = time.time_ns,
+    monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    timing_evidence: TimingEvidence | None = None,
 ) -> _DirectLive:
     """Return one bounded direct source; relays can implement ``LiveSource`` instead."""
     if duration_seconds <= 0:
@@ -738,7 +761,14 @@ def _direct_live(
         from websockets.asyncio.client import connect as websocket_connect
 
         connect = websocket_connect
-    return _DirectLive(credentials, duration_seconds, connect)
+    return _DirectLive(
+        credentials,
+        duration_seconds,
+        connect,
+        wall_ns=wall_ns,
+        monotonic_ns=monotonic_ns,
+        timing_evidence=timing_evidence,
+    )
 
 
 def _validate_market_data_relay(url: str) -> str:
@@ -770,12 +800,27 @@ class _RelayLive(_DirectLive):
     """BTC trade/quote view of the fixed local relay, with no Alpaca authentication."""
 
     def __init__(
-        self, relay_url: str, duration_seconds: float, connect: Callable[..., Any]
+        self,
+        relay_url: str,
+        duration_seconds: float,
+        connect: Callable[..., Any],
+        *,
+        wall_ns: Callable[[], int] = time.time_ns,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        timing_evidence: TimingEvidence | None = None,
     ) -> None:
         # The superclass owns bounded synchronous iteration, frame decoding,
         # receipt evidence, filtering, and deterministic socket shutdown.
-        super().__init__(CryptoDataCredentials("relay", "relay"), duration_seconds, connect)
+        super().__init__(
+            CryptoDataCredentials("relay", "relay"),
+            duration_seconds,
+            connect,
+            wall_ns=wall_ns,
+            monotonic_ns=monotonic_ns,
+            timing_evidence=timing_evidence,
+        )
         self.relay_url = _validate_market_data_relay(relay_url)
+        self._strict_market_frame = True
 
     def _open(self) -> None:
         self._deadline = time.monotonic() + self.duration_seconds
@@ -811,31 +856,15 @@ class _RelayLive(_DirectLive):
             self.close()
             raise
 
-    def __next__(self) -> CryptoTrade | CryptoQuote:
-        if self._closed:
-            raise StopIteration
-        if self._loop is None:
-            self._open()
-        while True:
-            if self._pending:
-                return self._pending.popleft()
-            raw = self._receive()
-            if raw is None:
-                raise StopIteration
-            received = UtcNanoseconds(time.time_ns())
-            for frame in decode_frame(raw):
-                if frame.get("T") not in ("t", "q"):
-                    raise PaperApplicationError(
-                        "local crypto relay emitted a control or unsupported frame"
-                    )
-                event = normalize(frame, received_at=received).event
-                if event.instrument == BTC:
-                    assert isinstance(event, (CryptoTrade, CryptoQuote))
-                    self._pending.append(event)
-
 
 def _relay_live(
-    relay_url: str, duration_seconds: float, *, connect: Callable[..., Any] | None = None
+    relay_url: str,
+    duration_seconds: float,
+    *,
+    connect: Callable[..., Any] | None = None,
+    wall_ns: Callable[[], int] = time.time_ns,
+    monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    timing_evidence: TimingEvidence | None = None,
 ) -> _RelayLive:
     if duration_seconds <= 0:
         raise PaperApplicationError("positive experiment duration required")
@@ -843,7 +872,14 @@ def _relay_live(
         from websockets.asyncio.client import connect as websocket_connect
 
         connect = websocket_connect
-    return _RelayLive(relay_url, duration_seconds, connect)
+    return _RelayLive(
+        relay_url,
+        duration_seconds,
+        connect,
+        wall_ns=wall_ns,
+        monotonic_ns=monotonic_ns,
+        timing_evidence=timing_evidence,
+    )
 
 
 def _parser(*, session: bool = False) -> argparse.ArgumentParser:

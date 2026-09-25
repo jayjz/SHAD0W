@@ -16,15 +16,19 @@ import json
 import logging
 import os
 import signal
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Protocol
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
+
+from shadow.operations.crypto_timing import ReceiveClocks, TimingEvidence
 
 ALPACA_CRYPTO_URL = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
 LOCAL_HOST = "127.0.0.1"
@@ -146,6 +150,9 @@ class AlpacaCryptoFeedRelay:
         port: int = LOCAL_PORT,
         upstream_connect: Callable[[], Awaitable[Socket]] | None = None,
         reconnect_delay: Callable[[int], float] | None = None,
+        timing: TimingEvidence | None = None,
+        wall_ns: Callable[[], int] | None = None,
+        monotonic_ns: Callable[[], int] | None = None,
     ) -> None:
         if host != LOCAL_HOST:
             raise ValueError("crypto relay must bind only to 127.0.0.1")
@@ -156,6 +163,9 @@ class AlpacaCryptoFeedRelay:
         self.port = port
         self._upstream_connect = upstream_connect or self._connect_upstream
         self._reconnect_delay = reconnect_delay or (lambda attempt: min(2**attempt, 30))
+        self._timing = timing
+        self._wall_ns = wall_ns or time.time_ns
+        self._monotonic_ns = monotonic_ns or time.monotonic_ns
         self._server: Server | None = None
         self._upstream_task: asyncio.Task[None] | None = None
         self._clients: set[_Client] = set()
@@ -329,6 +339,11 @@ class AlpacaCryptoFeedRelay:
             raise ValueError("upstream_authentication_rejected")
         raise ValueError("upstream_protocol_failure")
 
+    async def _recv_timed(self, socket: Socket) -> tuple[str | bytes, ReceiveClocks]:
+        """Sample clocks only after the provider frame receive completes."""
+        raw = await socket.recv()
+        return raw, ReceiveClocks.capture(self._wall_ns, self._monotonic_ns)
+
     async def _serve_upstream(self, socket: Socket) -> None:
         active: CryptoRelaySubscription | None = None
         while not self._stopping:
@@ -361,7 +376,7 @@ class AlpacaCryptoFeedRelay:
                     raise ValueError("upstream_subscription_rejected")
                 continue
             self._ready_clients(active)
-            receive = asyncio.create_task(socket.recv())
+            receive = asyncio.create_task(self._recv_timed(socket))
             changed = asyncio.create_task(self._subscription_changed.wait())
             try:
                 done, _ = await asyncio.wait(
@@ -375,7 +390,10 @@ class AlpacaCryptoFeedRelay:
             if changed in done:
                 self._subscription_changed.clear()
             if receive in done:
-                await self._broadcast(receive.result(), _loads(receive.result()))
+                raw, clocks = receive.result()
+                if self._timing is not None:
+                    self._timing.observe_frame(raw, clocks)
+                await self._broadcast(raw, _loads(raw))
 
     @staticmethod
     def _subscription_acknowledges(
@@ -456,19 +474,37 @@ class AlpacaCryptoFeedRelay:
 
 
 async def _run(arguments: argparse.Namespace) -> None:
+    timing: TimingEvidence | None = None
+    if arguments.timing_evidence is not None:
+        timing = TimingEvidence(
+            arguments.timing_evidence,
+            role="relay",
+            transport="provider_websocket",
+            max_events=arguments.timing_max_events,
+            code_revision=arguments.code_revision,
+        )
     relay = AlpacaCryptoFeedRelay(
-        CryptoRelayCredentials.from_environment(os.environ), port=arguments.port
+        CryptoRelayCredentials.from_environment(os.environ),
+        port=arguments.port,
+        timing=timing,
     )
-    await relay.start()
-    print(_frame({"T": "relay_started", "host": LOCAL_HOST, "port": arguments.port}), flush=True)
-    stopped = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signum, stopped.set)
     try:
-        await stopped.wait()
+        await relay.start()
+        try:
+            print(
+                _frame({"T": "relay_started", "host": LOCAL_HOST, "port": arguments.port}),
+                flush=True,
+            )
+            stopped = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(signum, stopped.set)
+            await stopped.wait()
+        finally:
+            await relay.stop()
     finally:
-        await relay.stop()
+        if timing is not None:
+            timing.close()
 
 
 async def _health(port: int) -> None:
@@ -484,6 +520,13 @@ def main() -> int:
     parser.add_argument(
         "--health", action="store_true", help="read sanitized localhost relay health"
     )
+    parser.add_argument(
+        "--timing-evidence",
+        type=Path,
+        help="write bounded read-only receive timing JSONL; it has no trading authority",
+    )
+    parser.add_argument("--timing-max-events", type=int, default=32)
+    parser.add_argument("--code-revision", default="unspecified")
     arguments = parser.parse_args()
     if arguments.health:
         asyncio.run(_health(arguments.port))
