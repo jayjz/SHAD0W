@@ -249,6 +249,58 @@ def test_activity_pagination_and_unproven_finality() -> None:
     assert isinstance(result, BrokerError)
 
 
+@pytest.mark.parametrize("offset", [-timedelta(minutes=2), timedelta(minutes=1)])
+def test_widened_activity_query_ignores_out_of_window_fills(offset: timedelta) -> None:
+    row = dict(fill_row(), transaction_time=(NOW + offset).isoformat())
+    result, _ = collect([[row]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert result.executions == ()
+    assert result.history_start == NOW - timedelta(minutes=1)
+    assert result.history_end == NOW
+
+
+def test_in_window_fill_remains_in_evidence() -> None:
+    stamp = NOW - timedelta(seconds=30)
+    result, _ = collect([[dict(fill_row(), transaction_time=stamp.isoformat())]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert len(result.executions) == 1
+    assert result.executions[0].evidence.observation_time == stamp
+
+
+@pytest.mark.parametrize("stamp", ["bad", NOW.replace(tzinfo=None).isoformat()])
+def test_unclassifiable_fill_timestamp_fails_closed(stamp: str) -> None:
+    result, _ = collect([[dict(fill_row(), transaction_time=stamp)]])
+    assert isinstance(result, BrokerError)
+
+
+def test_fee_date_and_correction_semantics_survive_fill_bounding() -> None:
+    fee: dict[str, object] = dict(
+        id="fee",
+        activity_type="CFEE",
+        date=NOW.date().isoformat(),
+        net_amount="0",
+        qty="-0.000003",
+        symbol="BTCUSD",
+        status="executed",
+    )
+    usd_fee: dict[str, object] = dict(
+        id="usd-fee",
+        activity_type="FEE",
+        date=NOW.date().isoformat(),
+        net_amount="-0.12",
+        symbol="BTCUSD",
+    )
+    correction = dict(fill_row("corrected"), previous_id="original")
+    old_fill = dict(fill_row("old"), transaction_time=(NOW - timedelta(days=1)).isoformat())
+    result, _ = collect([[old_fill, fee, usd_fee, correction]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert result.executions == ()
+    assert len(result.fees) == 2
+    assert result.fees[1].amount == Decimal("0.12")
+    assert result.fees[1].asset == "USD"
+    assert result.unsupported == ("corrected:correction",)
+
+
 @pytest.mark.parametrize(
     "row",
     [

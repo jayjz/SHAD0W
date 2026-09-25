@@ -165,7 +165,31 @@ def collect_activity_rows(
                 raise ValueError("conflicting duplicate activity")
             rows[identity] = row
         if len(page) < 100:
-            return tuple(rows.values()), received
+            bounded = []
+            for row in rows.values():
+                # Keep translation strict, but remove ordinary executions that
+                # the deliberately date-widened provider query may return.
+                # Corrections and unsupported fills retain their existing
+                # translation behavior and are not reinterpreted here.
+                if (
+                    row.get("activity_type") == "FILL"
+                    and row.get("type") in ("fill", "partial_fill")
+                    and row.get("symbol") in ("BTC/USD", "BTCUSD")
+                    and row.get("previous_id") is None
+                    and row.get("correction_of") is None
+                ):
+                    try:
+                        stamp = datetime.fromisoformat(
+                            _text(row.get("transaction_time")).replace("Z", "+00:00")
+                        )
+                    except ValueError as exc:
+                        raise ValueError("malformed activity execution timestamp") from exc
+                    if stamp.tzinfo is None or stamp.utcoffset() is None:
+                        raise ValueError("malformed activity execution timestamp")
+                    if not history_start <= stamp <= history_end:
+                        continue
+                bounded.append(row)
+            return tuple(bounded), received
         cursor = _text(page[-1].get("id"))
         if cursor in cursors:
             raise ValueError("stalled activity pagination")
