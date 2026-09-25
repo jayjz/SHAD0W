@@ -422,7 +422,8 @@ class BtcPaperSession(BtcPaperExperiment):
                             self._submit(proposal)
             self._poll()
             if (
-                len(self.store.attempts) == 2 and not self.store.halted
+                len(self.store.attempts) == 2
+                and not self.store.halted
                 and self.store.reconciliation is not None
                 and self.store.reconciliation.state is OperationalState.FLAT
             ):
@@ -510,7 +511,8 @@ class BtcPaperSession(BtcPaperExperiment):
                 {"symbol": p.instrument.identifier, "quantity": str(p.quantity)}
                 for p in snapshot.positions
             ],
-            "broker_observed_at": None if snapshot is None
+            "broker_observed_at": None
+            if snapshot is None
             else snapshot.evidence.availability_time.isoformat(),
             "fills": []
             if activities is None
