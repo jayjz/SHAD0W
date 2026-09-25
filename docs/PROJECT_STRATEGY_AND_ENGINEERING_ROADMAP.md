@@ -2,42 +2,172 @@
 
 ## Governing rule
 
-SHAD0W advances only when evidence justifies the next gate. A phase is not a commitment to build later phases, nor does a profitable backtest establish a durable edge. As implementation appears, the documented invariants below must acquire executable regression or property tests.
+SHAD0W advances only when evidence justifies the next authority boundary. A completed implementation milestone does not imply strategy validity, provider acceptance, continuous operation, or profitability.
 
-## P0 — research foundation
+For the current implementation snapshot, use [STATUS.md](STATUS.md). This document records milestone history and the next evidence gates.
 
-- **P0.0 — repository operating foundation: COMPLETE.** Established the operating contract, scientific method, boundaries, and bootstrap tooling.
-- **P0.1 — deterministic market-data contracts: COMPLETE.** Provider-neutral time-aware data types, strict validation, provenance, deterministic SHA-256 identity, and local fixtures have executable temporal and validation invariants.
-- **P0.2A — deterministic feature kernel: COMPLETE.** Immutable close-price return and strict rolling-statistic snapshots from P0.1-validated bars, explicit warm-up/unavailability semantics, propagated availability, fixed Decimal arithmetic, and prefix-stability regression tests.
-- **P0.2B — strategy-facing indicators and feature composition: COMPLETE (no additional code required).** The first hypothesis composes and thresholds P0.2A close z-score evidence: `price < mean - k * std` is representable as `z_score < -k`. No redundant Bollinger-band wrapper, RSI, or composition framework was added.
-- **P0.3 — minimal mean-reversion baseline: COMPLETE.** One immutable-configured, provider-neutral, signal-only close z-score hypothesis proposes long entry or exit evidence. It is unvalidated and makes no profitability claim; risk remains independent.
-- **P0.4A — chronological event semantics: COMPLETE.** Immutable availability/event evidence, canonical event ordering, and strict later-opportunity eligibility prevent same-bar completed-close execution without creating fills or portfolio state.
-- **P0.4B — authoritative position/order lifecycle: COMPLETE.** Immutable per-instrument `flat`/`pending_entry`/`holding`/`pending_exit` state, deterministic conflict policy, strict P0.4A eligibility composition, unresolved-state reporting, and reconstructable transition evidence exist without prices, quantities, costs, P&L, or broker behavior.
-- **P0.4C — end-to-end chronological simulator: COMPLETE.** One immutable result now composes P0.1 validated bars, P0.2 availability-aware z-score snapshots, P0.3 proposals, P0.4A canonical eligibility, and P0.4B authoritative per-instrument lifecycle state. Decisions occur once per feature availability instant, pending state fails closed, prefix evidence is regression-tested, and no economic execution semantics are claimed.
-- **P0.5A — deterministic execution and fill semantics: COMPLETE.** P0.4A opportunities now authorize attempts rather than state changes. Immutable quote-side attempts/outcomes use only causally available, fresh P0.1 `Quote` evidence; long entries use ask, long exits use bid, crossed quotes reject, and only `filled` outcomes transition lifecycle state. This makes quoted spread observable without adding a second spread charge, but adds no P&L, quantity, fees, slippage, liquidity model, or broker behavior.
-- **P0.5B — deterministic adverse slippage sensitivity: COMPLETE.** Explicit finite nonnegative Decimal bps worsen ask-derived BUY and bid-derived SELL prices after baseline fill validation. Immutable outcomes preserve quote/configuration/baseline/modeled evidence; caller scenarios are canonical and monotonic. Zero reproduces P0.5A prices. No quantity, fees, market impact, partial fills, or evaluation was added.
-- **P0.5C — fixed quantity and fee economics: COMPLETE.** A separate immutable boundary attaches one caller-declared positive Decimal quantity and one explicit nonnegative synthetic fee in bps of absolute final executed notional to each filled outcome. Fees use the final slipped price; unfilled/rejected outcomes produce no economics. Per-instrument runner configuration is complete and canonical, while quantity/currency/fees have no strategy, risk, fill, price, retry, or lifecycle authority. Individual execution cash flow adds no portfolio/P&L state.
-- **P0.5 — bounded execution economics: COMPLETE.** The completed scope is quote-side executable pricing, deterministic adverse slippage, fixed declared quantity, and proportional fee evidence. It is not complete market microstructure realism: liquidity, capacity, partial fills, impact, broker schedules, and portfolio evaluation remain absent.
+## Completed research foundation
 
-## P1 — evaluation
+### P0 — deterministic research foundation
 
-**P1A — trade reconstruction and historical-evaluation foundation: COMPLETE.** Immutable evaluation replays the canonical lifecycle trace without rerunning strategy or execution selection, pairs only matching filled entry/exit economic executions, retains unsuccessful and incomplete evidence, and fails closed on inconsistent causal, configuration, and accounting references. Completed ordinary trades expose gross/net results and returns; nonpositive-price outcomes remain explicit stress evidence outside ordinary aggregates. Currency-separated descriptive summaries never mix caller-declared denominations. An immutable manifest identifies the supplied bar, quote, opportunity, configuration, implementation, complete simulation evidence, caller-supplied code revision, and declared limitations. P1A adds no funded portfolio, compounding, FX, holdout, walk-forward, parameter-selection, benchmark, or profitability claim.
+Completed:
 
-**P1B — sealed temporal study evidence: COMPLETE.** Validated P0.1 bar datasets can be frozen as verified content-addressed artifacts. An immutable plan predeclares strict train/development/final partitions, a candidate set whose identity is derived from canonical candidate fingerprints, a selection protocol, assumptions, identity, currency, and minimum sample. Matching development P1A evidence can bind a declared candidate; a deterministic sealed identity then permits one append-only final release, with load-time integrity verification and only a descriptive disposition. P1B does not independently execute or verify its declared selection rule, metric, or tie-break, and does not establish a trading edge, statistical significance, benchmark or walk-forward performance, parameter stability, portfolio accounting, multiple-testing/search-adjusted inference, live profitability, or proof that undeclared experiments did not occur.
+- provider-neutral market-data contracts and provenance;
+- deterministic dataset identity;
+- deterministic feature kernel;
+- explicit mean-reversion research hypothesis;
+- chronological event semantics;
+- simulated lifecycle;
+- end-to-end deterministic simulation;
+- quote-side execution semantics;
+- adverse slippage sensitivity;
+- fixed quantity and synthetic fee economics.
 
-## P2 — operational risk authority
+### P1 — evaluation and study evidence
 
-- **P2A — minimal deterministic paper risk authority: COMPLETE.** Provider-neutral paper market/DAY intents retain source signals and operator-declared whole-unit quantity. A pure versioned risk policy evaluates explicit causal feature, quote, inventory/order, and operator-control evidence. A single-process gate makes first decisions authoritative, reserves instrument/capacity before exposing one grant, rejects exact duplicates and identity conflicts, and permits one dispatch claim only from a genuine gate-issued artifact. The scope excludes persistence, broker/account reconciliation, cash, buying power, P&L, portfolio accounting, and external submission.
+Completed:
 
-## P3–P9 — evidence-gated directions
+- manifest-bound trade reconstruction;
+- descriptive historical evaluation;
+- content-addressed frozen bar datasets;
+- predeclared train/development/final study partitions;
+- immutable final release evidence.
 
-- **P3:** deterministic regime classification is deferred pending operational evidence.
-- **P4A — Alpaca live-data shadow: COMPLETE.** The market-data-only WebSocket adapter translates explicit IEX/SIP subscriptions directly to provider-neutral minute `Bar`/`Quote` values. Bar left-edge timestamps become interval ends and application receipt becomes `SYSTEM_RECEIVED` availability. Bounded append-only sessions retain accepted, duplicate, same-time-variant, delayed, and invalid dispositions; completed bars drive deterministic FLAT observational candidates per symbol. Verified stopped captures may seed trailing valid historical feature context without treating it as fresh live data. No broker/account state is fabricated, no gate is used, no authorization or order is emitted, and normalized captures replay deterministically.
-- **P5A — early bounded integration components: PARTIALLY IMPLEMENTED.** HEAD includes provider-neutral broker contracts/fake, durable SQLite journal and ownership, source-opportunity v2 identity, a PAPER-only Alpaca adapter, read-only risk preparation, and guarded human-armed one-shot PAPER dispatch. This is an early supervised one-shot integration probe, not completion of the original dependency sequence or final P5A.8 acceptance. [STATUS.md](STATUS.md) is the current capability source.
-- **P5A.3 — reconciliation and lifecycle projection: NEXT, DESIGNED ONLY.** Broker-authoritative reconciliation, capacity/lifecycle projection, restart recovery, and authority for lifecycle-backed signals remain absent. P5A.6 continuous PAPER application depends on P5A.3 and remains designed only. No live-capital support or strategy validation is implied.
-- **P6:** asynchronous semantic event-risk classification with typed, time-bounded outputs.
-- **P7:** execution-quality and signal-decay research.
-- **P8:** additional strategy research.
-- **P9:** future live-capital gate, only after separately defined operational, risk, and evidence requirements are met.
+These capabilities preserve research evidence. They do not establish a profitable edge.
 
-Directions beyond the bounded P5A design remain deliberately undesigned until a concrete requirement and supporting evidence justify them.
+### P2 — deterministic risk foundation
+
+Completed:
+
+- provider-neutral paper intents;
+- pure fail-closed risk evaluation;
+- duplicate/identity rules;
+- atomic in-process admission/reservation;
+- one-use process-local claim semantics.
+
+P2A remains a pure authority model rather than restart-safe broker execution.
+
+### P4 — live market-data shadow
+
+Completed:
+
+- Alpaca IEX/SIP shadow capture;
+- deterministic normalized evidence;
+- warm-start support;
+- observational candidates without broker authority.
+
+## Current P5 / BTC operational work
+
+The original P5A plan described the dependency chain for durable PAPER execution. HEAD now contains more of that foundation than the original phase labels imply.
+
+Implemented components include:
+
+- typed broker evidence contracts and fake broker;
+- SQLite journal and local account ownership;
+- deterministic PAPER client IDs;
+- bounded order-history collection;
+- Alpaca PAPER adapter;
+- journal-before-dispatch guard;
+- one-POST attempt semantics;
+- broker-authoritative reconciliation reducer;
+- typed BTC net fee/inventory accounting;
+- BTC-specific durable authority/counters;
+- raw BTC history warm start;
+- local BTC market-data relay;
+- BTC trend/momentum/volatility strategy candidate;
+- read-only PAPER preflight;
+- guarded initial BTC experiment;
+- bounded BTC strategy session with repeated hourly decisions;
+- at most one entry plus one linked exit.
+
+This is meaningful operational infrastructure, but it is **not continuous trading**.
+
+## Current evidence gap
+
+The highest-value unresolved operational problem is real-provider proof for the linked BTC exit.
+
+The strict accounting model needs evidence sufficient to establish:
+
+1. entry execution;
+2. fee effects;
+3. net broker position;
+4. currently available BTC;
+5. safe exact exit quantity.
+
+Current provider activity semantics do not prove fee linkage/finality strongly enough for SHAD0W to automatically upgrade every real BUY into SELL authority.
+
+Until that is solved, the correct behavior is to fail closed.
+
+## Near-term gates
+
+### Gate A — finish bounded real-provider lifecycle evidence
+
+Goal: demonstrate or explicitly bound the evidence needed for BUY → reconciled HOLDING → linked SELL → FLAT without weakening accounting rules.
+
+Success requires provider-backed evidence, not a forced demonstration trade.
+
+### Gate B — recovery acceptance
+
+Exercise durable recovery across:
+
+- crash before/after commit;
+- accepted submission with lost response;
+- duplicate delivery;
+- restart with exposure;
+- delayed or corrected activity;
+- ownership/journal conflicts;
+- unresolved fee state.
+
+No automatic retry may appear as a shortcut.
+
+### Gate C — continuous PAPER application
+
+Only after bounded lifecycle and recovery evidence are strong enough should SHAD0W add repeated multi-cycle PAPER operation.
+
+A continuous application must preserve:
+
+- broker-authoritative lifecycle;
+- durable attempt budgets;
+- no identity reset via new session labels;
+- restart reconciliation;
+- kill-switch semantics;
+- unresolved exposure handoff;
+- strategy/risk separation.
+
+### Gate D — strategy evaluation
+
+The BTC engineering configuration must be evaluated separately from operational plumbing.
+
+Relevant questions include:
+
+- signal frequency;
+- abstention rate;
+- sensitivity to cost hurdle;
+- parameter stability;
+- holdout behavior;
+- execution friction;
+- regime dependence;
+- multiple-testing risk.
+
+Operational correctness is not evidence of edge.
+
+## Deferred directions
+
+Deferred until justified by evidence:
+
+- deterministic regime classification;
+- asynchronous event-risk intelligence;
+- execution-quality / signal-decay research;
+- additional strategies;
+- portfolio-level risk;
+- live-capital support.
+
+## Explicitly not on the current roadmap gate
+
+No current milestone authorizes:
+
+- live-capital trading;
+- silent relaxation of causal or reconciliation invariants;
+- retrying uncertain submissions;
+- automatic forced liquidation;
+- profitability claims based on the bounded PAPER canary.

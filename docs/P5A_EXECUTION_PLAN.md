@@ -1,5 +1,9 @@
 # P5A execution plan
 
+> [!NOTE]
+> This document preserves the original P5A dependency and acceptance design. It is **not** the current implementation dashboard. HEAD now contains bounded BTC-specific reconciliation, dispatch, and session components that intentionally do not imply completion of the original generic P5A.6–P5A.8 sequence. Use [STATUS.md](STATUS.md) for current capabilities and [PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md](PROJECT_STRATEGY_AND_ENGINEERING_ROADMAP.md) for the current evidence gates.
+
+
 This is the detailed dependency and acceptance plan, not the current-status source;
 see [STATUS.md](STATUS.md). P5A.0 originally delivered the contract, ADR, and CI.
 HEAD now also contains implemented P5A.1/P5A.2 foundations and partial components

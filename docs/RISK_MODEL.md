@@ -1,69 +1,185 @@
 # Risk model
 
-## P2A authority
+SHAD0W treats strategy output as a proposal, never as submission authority.
 
-`shadow.risk` is the independent deterministic admission boundary for the paper target. A strategy `Signal` remains a proposal. An `OrderIntent` adds provider-neutral operational semantics but still carries no submission authority. A historical `RiskDecision(AUTHORIZED)` is evidence only. The application dispatch seam accepts a gate-issued `AuthorizedOrder`, which can be claimed once. It proves authorization at admission time only and is insufficient for external submission.
+The current repository contains two related risk boundaries:
 
-P2A supports long equity-style BUY entry and SELL full exit using only market/DAY semantics. `OperationalQuantityConfig` is separate from research `ExecutionEconomicsConfig`: the operator declares a finite quantity, and risk requires whole positive units within the policy maximum. The strategy never sizes. Fractional-share support may be introduced later at the operational/broker layer; whole units are a P2A restriction rather than a universal SHAD0W invariant.
+1. the original provider-neutral P2A paper-risk gate used to prove deterministic authorization/admission semantics;
+2. the BTC-specific risk and durable dispatch path used by the bounded BTC PAPER experiment/session.
 
-## Policy and evidence
+See [STATUS.md](STATUS.md) for current implementation coverage.
 
-`RiskPolicy` is immutable, versioned, and explicit about enabled state, allowed instruments, maximum quantity per order, maximum concurrent positions, and maximum signal, feature, quote, and operational-state ages. Construction has no trading-enabled default. P2A deliberately has no cash, equity, buying-power, notional, leverage, loss, P&L, VaR, Kelly, or dynamic-sizing rule because no authoritative account model exists.
+## Authority chain
 
-`RiskState` carries a declared operational scope and revision, inventory completeness, known open long positions, outstanding operational orders/authorizations, observation and availability times, and timestamped operator controls. Missing inventory is never flat. Trading disabled or an active kill switch rejects both entries and exits. This is an automation freeze for P2A, not a final emergency-liquidation policy.
+```mermaid
+flowchart LR
+    S["Strategy proposal"] --> R["Pure risk evaluation"]
+    R -->|reject| X["No dispatch"]
+    R -->|authorize| J["Durable journal admission"]
+    J --> V["Submission-time revalidation"]
+    V -->|fail| X
+    V -->|pass| P["One guarded PAPER POST"]
+    P --> B["Broker evidence"]
+    B --> C["Reconciliation"]
+    C --> O["Operational lifecycle"]
+    O -. future proposal context .-> S
+```
 
-The pure evaluator consumes an explicit decision time and performs no wall-clock, environment, filesystem, network, broker, or global-state lookup. Signal, feature, quote, state, and controls must not be future evidence. Freshness uses observation time (signal decision time for signal age); a recent availability time cannot refresh an old observation. Age equal to the maximum is accepted; one microsecond beyond rejects. Signal fields must match the supplied ready `FeatureSnapshot`, and its claimed reason, threshold condition, and feature freshness at signal creation must be internally consistent. The quote must match the instrument, be available, be fresh, have positive sides, and not be crossed; a positive locked quote is permitted. Thus P0.5 stress-domain nonpositive prices cannot authorize an operational order.
+No historical risk decision, signal, reconstructed token, client ID, or broker acceptance message is sufficient by itself to authorize another external effect.
 
-Risk model `shadow.risk.paper.v2` adds signal-rule consistency checks and preserves conflicting reservation evidence during merging. It supersedes v1 rather than silently giving changed decisions the same implementation label. These checks establish consistency of supplied evidence, not authenticity of dataset/configuration labels or a reconstruction of features from market history. Callers must bind immutable configuration and dataset identities; changing both a signal and its supporting evidence consistently is not detectable as tampering by P2A.
+## P2A deterministic paper authority
 
-## Admission, duplicates, and capacity
+P2A establishes the original independent authorization model:
 
-The business identity is a SHA-256 digest of a narrow ordered encoding of operational scope, instrument, strategy/configuration identity, signal type, and source-feature identity. Consumer/strategy-evaluation time and operational quantity are excluded. A separate payload fingerprint covers the full signal content, quantity and its configuration identity, target, market/DAY semantics, and intent time. Decimal encoding is canonical and independent of ambient context.
+- immutable versioned policy;
+- explicit operator controls;
+- causal feature/signal/quote validation;
+- inventory/order completeness requirements;
+- deterministic duplicate identity;
+- first-decision authority for one business opportunity;
+- atomic reservation before grant exposure;
+- one-use process-local claim.
 
-The first gate decision for a business identity is authoritative. An exact delivery retry returns `duplicate_intent` evidence referencing that decision and cannot issue another grant. Changed quantity, operational configuration, or content under the identity returns `intent_identity_conflict`; later state or policy evidence cannot revive the source signal.
+P2A is intentionally not restart-safe broker authority. Its gate-local grant is evidence of authorization at admission time, not a durable permission to submit later.
 
-This is deliberately a one-shot opportunity policy, including rejection for incomplete inventory, stale state, or disabled trading. Rejection does not assert that the market opportunity was executed: it closes that opportunity to this gate. Recovery can admit a new source opportunity but cannot retry the rejected one into authorization. There is no retryable/indeterminate disposition in P2A. Policy is immutable and fixed at gate construction; there is no supported policy-update API. Replacing the gate to change policy would lose history and is not a safe duplicate-handling procedure.
+This boundary remains useful as a pure risk model and regression target.
 
-For entry, a known position or any outstanding order for the instrument rejects. Known positions plus BUY reservations consume the concurrent-position limit. For exit, inventory must contain one known long position and requested quantity must equal it; missing, partial, and excess exits reject. Any outstanding order for the instrument rejects. An exit reservation does not free position capacity because only future authoritative reconciliation can establish closure.
+## BTC-specific risk evaluation
 
-`RiskGate` holds one lock across prior-history inspection, effective-state evaluation, decision recording, reservation, and grant issuance. Rejected decisions create no reservation. Authorized decisions reserve before the artifact is exposed, and reservations do not expire. An exact complete reservation echoed in supplied outstanding state counts once. A reused reference with changed contents or the same reservation under a changed reference retains both pieces of evidence and fails closed as inconsistent state. Merging never advances observation/availability timestamps or inventory completeness. State IDs/revisions are evidence labels, not a monotonic reconciliation protocol; payload fingerprints distinguish changed contents even when labels are reused.
+The bounded BTC path adds a separate policy appropriate to fractional BTC/USD PAPER execution.
 
-`claim_for_dispatch()` validates the gate-local token and recorded grant and returns the recorded intent once. It consumes no current controls, policy, clock, quote, or state. Grants have no expiry; later kill-switch activation, trading disablement, or elapsed freshness do not revoke an existing claim. Even private replacement of policy does not revoke it. Consequently a claim must never be treated as freshness-valid permission for external dispatch. P5A must design current-control/policy revalidation and bounded authorization freshness at submission, including the race between revalidation and dispatch. P2A provides no live control infrastructure.
+It re-evaluates:
 
-Claims, abandoned grants, and hypothetical broker rejection do not release reservations. A reported position alongside a retained BUY reservation is inconsistent and rejects even an attempted exit; an initial known position can receive a full-exit grant, but its SELL reservation never frees capacity. P2A therefore cannot support a continuous entry/fill/exit cycle. It deliberately has no fill, rejection, cancellation, timeout, or reconciliation transition, and a caller must not infer release from a changed state snapshot.
+- account binding and eligibility;
+- BTC asset tradability;
+- configured quantity and provider quantity constraints;
+- maximum entry notional;
+- cash buffer;
+- market evidence freshness;
+- strategy configuration identity;
+- broker snapshot/activity coverage;
+- lifecycle state;
+- existing attempts;
+- operator controls;
+- available quantity for exits.
 
-P2A assumes exactly one gate owner for a declared scope. Its history, reservations, and token registry are in memory. Ordinary dataclass construction and reconstructed historical evidence cannot claim; Python introspection can copy a private issuer/token into an equivalent artifact, but that artifact shares the original grant's single consumption record. Another gate cannot consume it, even when deterministic grant IDs match. There is no hostile-process security: code that can mutate private gate internals is outside this guarantee. P2A provides application authority discipline, not cryptographic isolation, distributed locking, restart-safe idempotency, or evidence that a newly started process matches the brokerage account. P4A must remain shadow-only; P5A will require broker-authoritative reconciliation and durable duplicate handling, as well as submission-time revalidation, before paper submission is safe.
+The strategy does not dynamically size the position. Quantity is operator-supplied and then independently checked.
 
-## P5A relationship and remaining authority requirements
+## Entry authority
 
-HEAD includes an early bounded one-shot PAPER probe outside P2A: it uses typed
-broker evidence, a journal, a PAPER adapter, and submission-time checks. It does
-not change the P2A behavior above or establish P5A.3 reconciliation/lifecycle
-authority. [STATUS.md](STATUS.md) is authoritative for current coverage; the
-[execution contract](P5A_EXECUTION_CONTRACT.md) and
-[ADR 0005](decisions/0005-paper-execution-recovery.md) retain the design rationale.
-No live-capital trading is permitted.
+A bounded strategy entry requires, at minimum:
 
-P5A.3 and later require a versioned durable risk authority preserving P2A pure rules and
-terminal decisions, with broker account/clock/asset eligibility, buying power,
-current controls, freshness, canary limits and durable daily usage. Admission,
-reservation, capability consumption and dispatch markers must be journaled before
-external effects. Revalidation must account for its own exact reservation without
-discarding any other exposure; historical authorization cannot substitute for
-current checks. A bounded final-send check narrows but cannot eliminate the race
-with broker state, market close or an in-flight control change.
+- reconciled initial-flat account state;
+- usable journal/ownership authority;
+- no unresolved prior attempt;
+- fresh market evidence;
+- a valid entry proposal from the frozen strategy configuration;
+- current broker account/asset evidence;
+- quantity legal under provider and policy constraints;
+- notional and cash-buffer checks;
+- trading enabled;
+- kill switch inactive;
+- a fresh submission deadline.
 
-Broker evidence alone supports reservation release or transformation, with linked
-orders/fills and complete positions agreeing in a committed reconciliation revision.
-Partial fills retain actual exposure and remaining obligation. Uncertain submissions
-halt all new submits, retain capacity and require reconciliation; deterministic
-client IDs do not authorize blind retries. Restarts rebuild durable history and
-reconcile before fresh authorization, never by resetting the P2A gate.
+A `NO_SIGNAL` decision is normal and is persisted as evidence.
 
-The initial envelope is one liquid allowlisted equity, one whole share, market/DAY,
-regular hours, one concurrent position, and a required daily attempt ceiling with
-entry budget reserved for a later exit. Reconciled holdings support full threshold
-exit proposals under the unchanged strategy. Kill switch, stale state or exhausted
-budget can block exits; none means liquidation. Operator recovery and unresolved
-exposure must remain explicit. [Follow-up tickets](P5A_EXECUTION_PLAN.md) define the
-tests and separate canary approval needed to make these requirements executable.
+## Exit authority
+
+A linked SELL is intentionally stricter.
+
+It requires:
+
+- a journal-linked prior entry;
+- reconciled `HOLDING` state;
+- execution/fill history sufficient to reconstruct exposure;
+- current broker position agreement;
+- explicit broker available BTC equal to reconciled net exposure;
+- legal quantity grid;
+- fresh strategy/risk evidence;
+- unchanged bounded session authority.
+
+Gross BUY fill quantity is not substituted for net available crypto.
+
+## Fee finality blocker
+
+Crypto fees can change net BTC inventory after an accepted BUY. SHAD0W therefore requires evidence strong enough to establish the quantity that can safely be submitted on the linked SELL.
+
+Current Alpaca activity evidence does not provide the proof-grade fee linkage/finality semantics required by the strict reducer. As a result:
+
+- a BUY can be accepted and reconciled to net exposure;
+- the system may still refuse the SELL;
+- the session may end unresolved;
+- manual PAPER cleanup may be required by the operator.
+
+This limitation must not be “fixed” by:
+
+- using gross fill quantity;
+- assuming `qty_available` proves fee finality by itself;
+- rounding an exit upward;
+- creating a new journal to bypass unresolved state;
+- retrying a possibly accepted order;
+- weakening timestamp or activity coverage checks.
+
+## Durable dispatch
+
+The bounded dispatch path adds guarantees that P2A alone does not provide:
+
+- stable account/scope binding;
+- deterministic client-order identity;
+- journal-before-POST ordering;
+- one POST per committed attempt;
+- bounded dispatch deadline;
+- submission-time broker/risk/control revalidation;
+- persistent uncertain outcomes;
+- restart reconciliation;
+- no automatic retry after uncertainty.
+
+Deterministic client IDs support lookup and duplicate reasoning. They never grant permission to resend.
+
+## Controls
+
+Trading authority depends on explicit operator controls.
+
+The current session supports:
+
+- explicit `--trading-enabled`;
+- PAPER-only endpoint validation;
+- explicit acknowledgement string;
+- kill-switch file observation;
+- bounded session deadline.
+
+The kill switch freezes automation. It does not imply automatic liquidation.
+
+## Fail-closed conditions
+
+Examples include:
+
+- stale/future market evidence;
+- account or scope mismatch;
+- incomplete inventory/order history;
+- unsupported broker activity;
+- malformed timestamps;
+- uncertain submission;
+- contradictory fills/positions;
+- unexplained external activity;
+- ownership loss;
+- journal identity conflict;
+- invalid or unavailable exit quantity;
+- insufficient fee linkage/finality.
+
+The desired result is explicit rejection, `UNRESOLVED`, or `HALTED` state—not a guessed recovery.
+
+## Current limits
+
+SHAD0W currently does not provide:
+
+- continuous repeated trading;
+- automatic retry/recovery of uncertain submissions;
+- automatic cancel/replace orchestration;
+- forced liquidation at session end;
+- proof-grade real-provider BTC exit finality;
+- live-capital trading;
+- portfolio-level risk optimization;
+- strategy-profitability validation.
+
+These limits are operational constraints, not roadmap marketing.
