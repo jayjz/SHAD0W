@@ -1,5 +1,10 @@
 # BTC execution seam audit and provider evidence
 
+Current addition: the [bounded session](BTC_PAPER_SESSION.md) composes the
+existing dispatcher into one entry/exit lifecycle with a distinct plumbing probe.
+Strict fee evidence is unchanged. The historical composition gaps below describe
+the original audit, not current session availability.
+
 Starting audit: 5e57da1d7dab221fbbb6ddbca71e3cf56b3f5bab, 2026-09-23.
 The pure evaluator returns serializable evidence, not a one-use capability. The
 v4 attempt table requires equity RiskDecision and broker session clock evidence.

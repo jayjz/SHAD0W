@@ -464,6 +464,23 @@ class AlpacaPaperBroker:
                 "malformed current BTC asset constraints",
             )
 
+    def read_btc_available(self) -> BrokerPosition | BrokerError:
+        """Explicit sellable BTC, never substituted from gross filled quantity."""
+        response, received = self._call("GET", "/v2/positions/BTCUSD")
+        if response.status != 200:
+            return self._error(response, received, "btc_available")
+        evidence = self._evidence("alpaca:btc_available", received, received)
+        try:
+            row = _object(response.body)
+            if self._instrument(row) != Instrument("BTC/USD"):
+                raise AlpacaPaperError("unexpected available-position instrument")
+            available = _decimal(row["qty_available"], positive=True)
+            if available > _decimal(row["qty"], positive=True):
+                raise AlpacaPaperError("available BTC exceeds position")
+            return BrokerPosition(evidence, Instrument("BTC/USD"), available)
+        except (KeyError, ValueError, TypeError, AlpacaPaperError):
+            return BrokerError(evidence, ErrorCategory.MALFORMED, "BTC availability unavailable")
+
     def read_snapshot(self) -> BrokerSnapshot | BrokerError:
         positions_response, received = self._call("GET", "/v2/positions")
         if positions_response.status != 200:

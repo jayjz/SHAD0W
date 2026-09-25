@@ -70,6 +70,7 @@ class BtcDispatcher:
         controls: Callable[[], OperatorControls],
         market: Callable[[], tuple[tuple[CompletedBtcInterval, ...], CryptoQuote]],
         monotonic: Callable[[], float] = time.monotonic,
+        session_guard: Callable[[SubmitRequest], None] | None = None,
     ) -> None:
         self.broker = broker
         self.store = journal
@@ -77,6 +78,7 @@ class BtcDispatcher:
         self.controls = controls
         self.market = market
         self.monotonic = monotonic
+        self.session_guard = session_guard
         self._thread = threading.get_ident()
         self._busy = False
         self._recovered = False
@@ -150,6 +152,7 @@ class BtcDispatcher:
         expected_revision: int,
         independent_risk_halt: bool = False,
         authority: BtcDispatchAuthority = BtcDispatchAuthority.PROOF,
+        plumbing_probe: bool = False,
     ) -> SubmissionResult | Reconciliation:
         self._held()
         if self._busy:
@@ -158,6 +161,17 @@ class BtcDispatcher:
         config = self.store.config
         if config is None:
             raise DispatchHalted("BTC run is not configured")
+        if plumbing_probe:
+            binding = self.store.journal.application_events("btc-session-binding")
+            if (
+                len(binding) != 1
+                or not isinstance(binding[0], tuple)
+                or len(binding[0]) != 3
+                or binding[0][0] is not True
+                or config.maximum_per_run != 2
+                or config.maximum_per_period != 2
+            ):
+                raise DispatchHalted("plumbing probe requires bounded session authority")
         intent = btc_intent_identity(evaluation, config.source_market_id)
         existing = next((a for a in self.store.attempts if a.intent_identity == intent), None)
         if existing is not None:
@@ -239,6 +253,7 @@ class BtcDispatcher:
                     if authority is BtcDispatchAuthority.INITIAL_EXPERIMENT
                     else BtcLifecycleAuthority.PROOF
                 ),
+                plumbing_probe=plumbing_probe,
             )
             if not fresh.authorized:
                 raise DispatchHalted("BTC revalidation rejected: " + ",".join(fresh.reasons))
@@ -258,6 +273,8 @@ class BtcDispatcher:
             ):
                 raise DispatchHalted("BTC experiment lifecycle changed since reconciliation")
             policy = evaluation.policy
+            if self.session_guard is not None:
+                self.session_guard(evaluation.request)
             expiry_ns = min(
                 evaluation.evaluated_ns + 30_000_000_000,
                 quote.observation_time.value + policy.maximum_market_age_ns,
@@ -304,6 +321,8 @@ class BtcDispatcher:
                 if checked:
                     raise DispatchHalted("BTC transport attempted a second send")
                 checked = True
+                if self.session_guard is not None:
+                    self.session_guard(attempt.request)
                 self._held()
                 self.store.refresh()
                 current_controls = self.controls()

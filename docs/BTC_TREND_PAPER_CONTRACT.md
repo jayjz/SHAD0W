@@ -1,5 +1,10 @@
 # BTC trend engineering candidate
 
+The [bounded session contract](BTC_PAPER_SESSION.md) now describes repeated
+live evaluations, persisted abstention filters and a guarded single linked exit.
+The strategy configuration below is unchanged. Historical unimplemented-application
+notes at the end of this document are superseded by that contract and STATUS.
+
 This is one unvalidated long/cash research candidate. Its engineering canary
 parameters are not optimal, fitted, or empirically validated. PAPER performance
 would not establish profitability. Live capital remains unsupported.

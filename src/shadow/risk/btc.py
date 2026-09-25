@@ -127,6 +127,7 @@ def evaluate_btc_risk(
     crypto_evidence: CryptoActivityEvidence | None = None,
     require_crypto_evidence: bool = False,
     lifecycle_authority: BtcLifecycleAuthority = BtcLifecycleAuthority.PROOF,
+    plumbing_probe: bool = False,
 ) -> BtcRiskEvaluation:
     """Recompute lifecycle/features; proposals cannot declare their own authority."""
     UtcNanoseconds(now_ns)
@@ -134,6 +135,10 @@ def evaluate_btc_risk(
         raise TypeError("typed BTC request required")
     request.__post_init__()
     reasons: list[str] = []
+    if (proposal.reason == "paper_plumbing_probe") != plumbing_probe:
+        reasons.append("probe_authority_mismatch")
+    if plumbing_probe and policy.maximum_entry_notional > 100:
+        reasons.append("probe_notional_limit")
     state = reconcile(
         attempts=attempts,
         snapshot=snapshot,
@@ -213,7 +218,7 @@ def evaluate_btc_risk(
     ):
         reasons.append("invalid_market_evidence")
     features = config.features(intervals, now_ns)
-    if (
+    if not plumbing_probe and (
         features is None
         or features != proposal.features
         or now_ns - features.end_ns > config.maximum_evidence_age_ns
@@ -233,10 +238,14 @@ def evaluate_btc_risk(
                 reasons.append("entry_requires_flat")
             if independent_risk_halt:
                 reasons.append("independent_risk_halt")
-            if features is not None and not (
-                features.trend_distance > config.round_trip_cost + config.cost_safety_margin
-                and features.fast_return > 0
-                and features.volatility <= config.maximum_volatility
+            if (
+                not plumbing_probe
+                and features is not None
+                and not (
+                    features.trend_distance > config.round_trip_cost + config.cost_safety_margin
+                    and features.fast_return > 0
+                    and features.volatility <= config.maximum_volatility
+                )
             ):
                 reasons.append("entry_filters_failed")
             notional = Fraction(request.quantity) * Fraction(quote.ask_price)
@@ -266,7 +275,9 @@ def evaluate_btc_risk(
                     interval_ns=config.interval_ns,
                 )
             )
-            if high is None or high != proposal.high_water_mark:
+            if plumbing_probe:
+                pass  # Explicit broker plumbing intent has no strategy exit claim.
+            elif high is None or high != proposal.high_water_mark:
                 reasons.append("incomplete_position_history")
             elif features is not None and not (
                 independent_risk_halt

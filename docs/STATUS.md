@@ -6,6 +6,15 @@ implementation claim.
 
 ## IMPLEMENTED
 
+- **Bounded BTC session:** `shadow-btc-paper-session` composes repeated hourly
+  decisions, durable abstention evidence, one entry plus one linked exit, and a
+  separate explicitly marked broker plumbing probe. Both use existing guarded
+  dispatch and strict net reconciliation; exits also require explicit broker
+  available BTC. Fake-broker tests cover strategy and probe round trips and
+  restart gates. Real Alpaca delayed fee finality remains a blocker to automatic
+  exits; this does not establish continuous trading. See the
+  [session contract and operator commands](BTC_PAPER_SESSION.md).
+
 - **BTC trend candidate:** deterministic completed trade intervals, configurable
   trend/momentum/volatility features, cost-aware long/cash proposals and high-water
   reconstruction. The [engineering configuration](BTC_TREND_PAPER_CONTRACT.md) is
@@ -95,7 +104,7 @@ implementation claim.
 
 ## NOT IMPLEMENTED
 
-- Automated BTC exits.
+- Real-provider acceptance of automated BTC exits.
 - Continuous BTC trading.
 - Proof-grade Alpaca fee finality/linkage.
 - Automatic retry/recovery of uncertain submissions.

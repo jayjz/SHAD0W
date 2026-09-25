@@ -76,6 +76,27 @@ def asset() -> BtcBrokerAsset:
     )
 
 
+@pytest.mark.parametrize("available", ["0.0011", None, "0.002", "NaN"])
+def test_available_btc_requires_explicit_valid_field(available: str | None) -> None:
+    payload: dict[str, object] = {"symbol": "BTCUSD", "asset_class": "crypto", "qty": "0.0012"}
+    if available is not None:
+        payload["qty_available"] = available
+    transport = RecordingTransport([response(200, payload)])
+    broker = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=transport,
+    )
+    result = broker.read_btc_available()
+    if available == "0.0011":
+        assert isinstance(result, BrokerPosition)
+        assert result.quantity == Decimal(available)
+    else:
+        assert isinstance(result, BrokerError)
+    assert transport.calls[0][0] == "GET"
+
+
 @pytest.mark.parametrize("side", list(OrderSide))
 def test_btc_market_gtc_fractional_payload_and_codec(side: OrderSide) -> None:
     request = btc_request(side)

@@ -158,6 +158,8 @@ class BtcPaperExperiment:
     WebSocket ownership without changing any strategy, risk, or execution code.
     """
 
+    submission_ceiling = 1
+
     def __init__(
         self,
         *,
@@ -172,8 +174,11 @@ class BtcPaperExperiment:
     ) -> None:
         if quantity <= 0 or not quantity.is_finite():
             raise PaperApplicationError("positive BTC quantity required")
-        if run_config.maximum_per_run != 1 or run_config.maximum_per_period != 1:
-            raise PaperApplicationError("BTC experiment submission ceiling must be exactly one")
+        if (
+            run_config.maximum_per_run != self.submission_ceiling
+            or run_config.maximum_per_period != self.submission_ceiling
+        ):
+            raise PaperApplicationError("BTC application submission ceiling mismatch")
         self.broker = broker
         self.journal = journal
         self.store = BtcJournal(journal)
@@ -703,7 +708,7 @@ class _DirectLive(Iterator[CryptoTrade | CryptoQuote]):
             if self._socket is not None:
                 await self._socket.close()
         finally:
-            if self._context is not None:
+            if self._context is not None and self._socket is not None:
                 await self._context.__aexit__(None, None, None)
 
     def close(self) -> None:
@@ -841,11 +846,19 @@ def _relay_live(
     return _RelayLive(relay_url, duration_seconds, connect)
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(*, session: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="bounded SHAD0W BTC PAPER experiment")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--preflight", action="store_true")
-    mode.add_argument("--experiment", action="store_true")
+    if session:
+        mode.add_argument("--session", action="store_true")
+        mode.add_argument("--probe", action="store_true")
+        parser.add_argument("--kill-switch-path", required=True, type=Path)
+        parser.add_argument(
+            "--paper-endpoint", required=True, choices=["https://paper-api.alpaca.markets"]
+        )
+    else:
+        mode.add_argument("--preflight", action="store_true")
+        mode.add_argument("--experiment", action="store_true")
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--operational-scope", required=True)
     parser.add_argument("--quantity", required=True, type=Decimal)
@@ -873,13 +886,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = _parser().parse_args()
-    if not 0 < args.duration_seconds <= 7_200:
-        raise SystemExit("duration must be within (0, 7200] seconds")
-    if args.experiment and args.paper_acknowledgement != _ACKNOWLEDGEMENT:
+def main(*, session: bool = False) -> int:
+    args = _parser(session=session).parse_args()
+    if not 0 < args.duration_seconds <= (86400 if session else 7200):
+        raise SystemExit("duration exceeds bounded application limit")
+    acknowledgement = "I-UNDERSTAND-ONE-BTC-PAPER-ENTRY-AND-EXIT" if session else _ACKNOWLEDGEMENT
+    if (session or args.experiment) and args.paper_acknowledgement != acknowledgement:
         raise SystemExit("explicit BTC PAPER acknowledgement is required")
-    if args.experiment and not args.trading_enabled:
+    if (session or args.experiment) and not args.trading_enabled:
         raise SystemExit("--trading-enabled is required for an experiment")
     credentials = PaperCredentials.from_environment()
     args.ownership_directory.mkdir(parents=True, exist_ok=True)
@@ -914,7 +928,27 @@ def main() -> int:
                 30_000_000_000,
                 30_000_000_000,
             )
-            runner = BtcPaperExperiment(
+            from shadow.application.btc_session import BtcPaperSession
+
+            sampled_controls = OperatorControls(
+                args.trading_enabled, args.kill_switch, datetime.now(UTC), datetime.now(UTC)
+            )
+
+            def controls() -> OperatorControls:
+                nonlocal sampled_controls
+                current = datetime.now(UTC)
+                killed = args.kill_switch or (session and args.kill_switch_path.exists())
+                if (
+                    killed != sampled_controls.kill_switch_active
+                    or (current - sampled_controls.observation_time).total_seconds() > 10
+                ):
+                    sampled_controls = OperatorControls(
+                        args.trading_enabled, killed, current, current
+                    )
+                return sampled_controls
+
+            runner_type = BtcPaperSession if session else BtcPaperExperiment
+            runner = runner_type(
                 broker=AlpacaPaperBroker(
                     credentials=credentials,
                     account_id=args.account_id,
@@ -928,17 +962,16 @@ def main() -> int:
                     config.configuration_id,
                     policy.policy_id,
                     args.code_revision,
-                    1,
-                    1,
+                    2 if session else 1,
+                    2 if session else 1,
                     86_400,
                 ),
                 risk_policy=policy,
                 quantity=args.quantity,
-                controls=lambda: OperatorControls(
-                    args.trading_enabled, args.kill_switch, datetime.now(UTC), datetime.now(UTC)
-                ),
+                controls=controls,
+                **({"plumbing_probe": args.probe} if session else {}),
             )
-            if args.preflight:
+            if not session and args.preflight:
                 payload = runner.preflight().payload()
             else:
                 data_credentials = CryptoDataCredentials.from_environment(os.environ)
@@ -947,17 +980,23 @@ def main() -> int:
                     if args.market_data_relay is not None
                     else (lambda duration: _direct_live(data_credentials, duration))
                 )
-                payload = runner.experiment(
+                operation = runner.run if isinstance(runner, BtcPaperSession) else runner.experiment
+                result = operation(
                     _historical_source(data_credentials, args.duration_seconds),
                     live_source,
                     args.duration_seconds,
-                ).payload()
+                )
+                payload = result if isinstance(result, dict) else result.payload()
             args.experiment_evidence_path.parent.mkdir(parents=True, exist_ok=True)
             args.experiment_evidence_path.write_text(
                 json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
             )
             print(json.dumps(payload, sort_keys=True))
     return 0
+
+
+def session_main() -> int:
+    return main(session=True)
 
 
 if __name__ == "__main__":

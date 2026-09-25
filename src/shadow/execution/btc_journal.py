@@ -10,6 +10,7 @@ from shadow.execution.crypto_accounting import CryptoActivityEvidence
 from shadow.execution.journal import ExecutionJournal, JournalError
 from shadow.execution.journal_codec import canonical_digest
 from shadow.execution.reconciliation import OperationalState, Reconciliation, reconcile
+from shadow.risk.models import OrderSide
 
 
 class BtcJournal:
@@ -208,6 +209,36 @@ class BtcJournal:
             raise JournalError("attempt must start without submission result")
         self._binding(attempt.request.account_id, attempt.request.operational_scope)
         evaluation = attempt.evaluation
+        session = self.journal.application_events("btc-session-binding")
+        if not session and evaluation.proposal.reason == "paper_plumbing_probe":
+            raise JournalError("probe requires bounded session journal")
+        if session:
+            binding = session[0]
+            if not isinstance(binding, tuple) or len(binding) != 3:
+                raise JournalError("invalid session binding")
+            probe, quantity, deadline = binding
+            expected_side = OrderSide.BUY if not self.attempts else OrderSide.SELL
+            if (
+                len(session) != 1
+                or len(self.attempts) >= 2
+                or config.maximum_per_run != 2
+                or config.maximum_per_period != 2
+                or evaluation.policy.maximum_entry_notional > 100
+                or attempt.request.side is not expected_side
+                or (evaluation.proposal.reason == "paper_plumbing_probe") != probe
+                or not isinstance(deadline, datetime)
+                or attempt.dispatch_deadline > deadline
+                or (not self.attempts and attempt.request.quantity != quantity)
+                or (
+                    self.attempts
+                    and (
+                        self.reconciliation is None
+                        or self.reconciliation.state is not OperationalState.HOLDING
+                        or attempt.request.quantity != self.reconciliation.exposure
+                    )
+                )
+            ):
+                raise JournalError("bounded session authority conflict")
         if (
             evaluation.config.configuration_id != config.strategy_configuration_id
             or evaluation.policy.policy_id != config.risk_policy_id
