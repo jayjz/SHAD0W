@@ -23,11 +23,14 @@ from shadow.domain import Instrument
 from shadow.execution.broker import (
     BrokerContractError,
     BrokerError,
+    ErrorCategory,
     OrderStatus,
     SubmissionStatus,
     SubmitRequest,
 )
+from shadow.execution.crypto import BtcSubmitRequest
 from shadow.execution.reconciliation import OperationalState, reconcile
+from shadow.features.btc_trend import BTC
 from shadow.risk.models import OrderSide, OrderTarget, OrderType, TimeInForce
 from tests.test_paper_dispatch import _dispatch_with_historical_status
 
@@ -554,3 +557,276 @@ def test_reconciliation_history_full_page_requires_cursor_and_exhaustion() -> No
     ).read_reconciliation_snapshot(earliest_attempt=committed)
     assert isinstance(duplicate, BrokerError)
     assert duplicate.reason == "duplicate PAPER history page row"
+
+
+def _error_response(status: int, body: bytes) -> HttpResponse:
+    return HttpResponse(
+        status,
+        {"X-Request-ID": "request-1", "APCA-API-SECRET-KEY": "supersecretvalue"},
+        body,
+    )
+
+
+def _encoded(body: dict[str, object] | bytes) -> bytes:
+    return body if isinstance(body, bytes) else json.dumps(body).encode()
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "reason", "submission", "category"),
+    [
+        (
+            403,
+            {"code": 40310000, "message": "cost basis must be >= minimal amount of order 1"},
+            "HTTP 403 POST /v2/orders code=40310000 "
+            "message=cost basis must be >= minimal amount of order 1",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "cost basis must be >= minimal amount of order 10"},
+            "HTTP 403 POST /v2/orders code=40310000 "
+            "message=cost basis must be >= minimal amount of order 10",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {
+                "buying_power": "558660.03",
+                "code": 40310000,
+                "cost_basis": "680930026.5",
+                "id": ACCOUNT_UUID,
+                "account_number": ACCOUNT_NUMBER,
+                "message": "insufficient buying power",
+            },
+            "HTTP 403 POST /v2/orders code=40310000 message=insufficient buying power",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": 'asset "CWVX" is not fractionable'},
+            'HTTP 403 POST /v2/orders code=40310000 message=asset "CWVX" is not fractionable',
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            422,
+            b'{"code":40010001,"message":"notional must be \\u003e= 1.00"}',
+            "HTTP 422 POST /v2/orders code=40010001 message=notional must be >= 1.00",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            422,
+            {"code": "40010001", "message": "invalid time_in_force"},
+            "HTTP 422 POST /v2/orders code=40010001 message=invalid time_in_force",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            422,
+            {"code": 40010001, "message": "qty or notional is required"},
+            "HTTP 422 POST /v2/orders code=40010001 message=qty or notional is required",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": True, "message": "insufficient buying power"},
+            "HTTP 403 POST /v2/orders message=insufficient buying power",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "rejected because key was wrong"},
+            "HTTP 403 POST /v2/orders code=40310000",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "blocked a67ee0f2-11d4-4bb5-a02f-ef1241497e48 now"},
+            "HTTP 403 POST /v2/orders code=40310000 message=blocked [redacted] now",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "account PA34U6RNDIPQ blocked"},
+            "HTTP 403 POST /v2/orders code=40310000 message=account [redacted] blocked",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "cost\nbasis must be >= minimal amount of order 1"},
+            "HTTP 403 POST /v2/orders code=40310000 "
+            "message=cost basis must be >= minimal amount of order 1",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "bad\x00message"},
+            "HTTP 403 POST /v2/orders code=40310000",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            {"code": 40310000, "message": "x" * 181},
+            "HTTP 403 POST /v2/orders code=40310000",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            b"",
+            "HTTP 403 POST /v2/orders",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            b"<html>secret supersecretvalue</html>",
+            "HTTP 403 POST /v2/orders",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            403,
+            b'{"code":40310000,"message":"insufficient buying power"}' + b" " * 4096,
+            "HTTP 403 POST /v2/orders",
+            SubmissionStatus.REJECTED,
+            ErrorCategory.DEFINITIVE_REJECTION,
+        ),
+        (
+            500,
+            {"code": 40310000, "message": "insufficient buying power"},
+            "HTTP 500 POST /v2/orders code=40310000 message=insufficient buying power",
+            SubmissionStatus.UNCERTAIN,
+            ErrorCategory.UNAVAILABLE,
+        ),
+    ],
+)
+def test_submit_retains_sanitized_alpaca_error_body(
+    status: int,
+    body: dict[str, object] | bytes,
+    reason: str,
+    submission: SubmissionStatus,
+    category: ErrorCategory,
+) -> None:
+    transport = RecordingTransport([_error_response(status, _encoded(body))])
+    paper = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=transport,
+    )
+    result = paper.submit(request())
+    assert len(transport.calls) == 1
+    assert transport.calls[0][0] == "POST"
+    assert transport.calls[0][1] == PAPER_TRADING_ORIGIN + "/v2/orders"
+    assert result.status is submission
+    assert result.order is None
+    assert result.error is not None
+    assert result.error.category is category
+    assert result.error.reason == reason
+    leaked = (
+        "supersecretvalue",
+        "APCA-API",
+        "558660.03",
+        "680930026.5",
+        ACCOUNT_UUID,
+        ACCOUNT_NUMBER,
+        "PA34U6RNDIPQ",
+        "a67ee0f2-11d4-4bb5-a02f-ef1241497e48",
+    )
+    assert all(secret not in result.error.reason for secret in leaked)
+
+
+def test_read_errors_keep_route_class_without_query_or_credentials() -> None:
+    unauthorized = broker(
+        [_error_response(401, _encoded({"message": "unauthorized"}))]
+    ).read_account()
+    assert isinstance(unauthorized, BrokerError)
+    assert unauthorized.category is ErrorCategory.ACCESS_DENIED
+    assert unauthorized.reason == "HTTP 401 GET /v2/account message=unauthorized"
+    assert "supersecretvalue" not in unauthorized.reason
+
+    client_id = "shp1_" + "b" * 40
+    missing = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=RecordingTransport(
+            [_error_response(404, _encoded({"message": "order not found"}))]
+        ),
+    ).lookup_order(order_id=None, client_id=client_id)
+    assert isinstance(missing, BrokerError)
+    assert missing.category is ErrorCategory.NOT_FOUND
+    assert missing.reason == "HTTP 404 GET /v2/orders:by_client_order_id message=order not found"
+    assert client_id not in missing.reason
+
+
+def test_btc_rejection_keeps_one_post_and_sanitized_provider_detail() -> None:
+    body = {"code": 40310000, "message": "cost basis must be >= minimal amount of order 10"}
+    transport = RecordingTransport(
+        [
+            response(
+                200,
+                {
+                    "symbol": "BTC/USD",
+                    "class": "crypto",
+                    "status": "active",
+                    "tradable": True,
+                    "fractionable": True,
+                    "min_order_size": "0.0001",
+                    "min_trade_increment": "0.0001",
+                    "price_increment": "0.01",
+                },
+            ),
+            _error_response(403, _encoded(body)),
+        ]
+    )
+    paper = AlpacaPaperBroker(
+        credentials=PaperCredentials("key", "secret"),
+        account_id="paper-account",
+        operational_scope="scope",
+        transport=transport,
+    )
+    submitted = BtcSubmitRequest(
+        "paper-account",
+        "scope",
+        "shp1_" + "a" * 40,
+        BTC,
+        OrderSide.BUY,
+        Decimal("0.0012"),
+        OrderTarget.PAPER,
+        OrderType.MARKET,
+        TimeInForce.GTC,
+        False,
+    )
+    result = paper.submit(submitted)
+    posts = [call for call in transport.calls if call[0] == "POST"]
+    assert len(posts) == 1
+    assert json.loads(posts[0][2] or b"{}") == {
+        "symbol": "BTC/USD",
+        "qty": "0.0012",
+        "side": "buy",
+        "type": "market",
+        "time_in_force": "gtc",
+        "extended_hours": False,
+        "client_order_id": submitted.client_id,
+    }
+    assert result.status is SubmissionStatus.REJECTED
+    assert result.order is None
+    assert result.error is not None
+    assert result.error.category is ErrorCategory.DEFINITIVE_REJECTION
+    assert result.error.reason == (
+        "HTTP 403 POST /v2/orders code=40310000 "
+        "message=cost basis must be >= minimal amount of order 10"
+    )

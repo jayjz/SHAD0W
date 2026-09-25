@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -160,6 +161,107 @@ def _request_id(headers: Mapping[str, str]) -> str | None:
     return None
 
 
+_PROVIDER_MESSAGE_LIMIT = 180
+_PROVIDER_BODY_LIMIT = 4096
+_STATIC_PAPER_ROUTES = frozenset(
+    {
+        "/v2/account",
+        "/v2/account/activities",
+        "/v2/clock",
+        "/v2/orders",
+        "/v2/orders:by_client_order_id",
+        "/v2/positions",
+    }
+)
+_UUID_TEXT = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_LONG_HEX = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+# Mixed identifiers long enough to be account numbers, without eating numeric error codes.
+_MIXED_IDENTIFIER = re.compile(r"\b(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{12,}\b")
+
+
+def _endpoint_class(method: str, path: str) -> str:
+    """Method plus a stable route. Query strings and raw ids are not evidence."""
+    verb = method if method in {"GET", "POST", "PATCH", "DELETE"} else "HTTP"
+    route = path.split("?", 1)[0]
+    if route not in _STATIC_PAPER_ROUTES:
+        if route.startswith("/v2/assets/"):
+            route = "/v2/assets/{symbol}"
+        elif route.startswith("/v2/positions/"):
+            route = "/v2/positions/{symbol}"
+        elif route.startswith("/v2/orders/"):
+            route = "/v2/orders/{order_id}"
+        else:
+            route = "/v2/unclassified"
+    return f"{verb} {route}"
+
+
+def _provider_code(value: object) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    if text.isascii() and text.isdigit() and 1 <= len(text) <= 12:
+        return text
+    return None
+
+
+def _provider_message(value: object, *, forbidden: tuple[str, ...]) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text or len(text) > _PROVIDER_MESSAGE_LIMIT:
+        return None
+    if any(ord(char) < 32 or ord(char) > 126 for char in text):
+        return None
+    lowered = text.casefold()
+    if "apca-api-" in lowered or "authorization" in lowered or "bearer " in lowered:
+        return None
+    if any(secret and secret in text for secret in forbidden):
+        return None
+    redacted = _UUID_TEXT.sub("[redacted]", text)
+    redacted = _LONG_HEX.sub("[redacted]", redacted)
+    redacted = _MIXED_IDENTIFIER.sub("[redacted]", redacted)
+    redacted = " ".join(redacted.split())
+    return redacted or None
+
+
+def _provider_rejection_detail(
+    *,
+    status: int,
+    method: str,
+    path: str,
+    body: bytes,
+    forbidden: tuple[str, ...],
+) -> str:
+    """HTTP status, route class, and optional Alpaca `code`/`message` only.
+
+    Extra JSON fields, headers, and non-JSON bodies are discarded. Parsing
+    failure leaves the status and route, which is still a complete diagnostic.
+    """
+    code: str | None = None
+    message: str | None = None
+    if len(body) <= _PROVIDER_BODY_LIMIT:
+        try:
+            payload: object = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            code = _provider_code(payload.get("code"))
+            message = _provider_message(payload.get("message"), forbidden=forbidden)
+    parts = [f"HTTP {status}", _endpoint_class(method, path)]
+    if code is not None:
+        parts.append(f"code={code}")
+    if message is not None:
+        parts.append(f"message={message}")
+    return " ".join(parts)
+
+
 class AlpacaPaperBroker:
     """The only production trading adapter; its origin is a non-configurable constant."""
 
@@ -221,7 +323,17 @@ class AlpacaPaperBroker:
         )
         return response, datetime.now(UTC)
 
-    def _error(self, response: HttpResponse, received: datetime, operation: str) -> BrokerError:
+    def _sensitive_fragments(self) -> tuple[str, ...]:
+        return (self._credentials.key_id, self._credentials.secret_key, self._account_id)
+
+    def _error(
+        self,
+        response: HttpResponse,
+        received: datetime,
+        operation: str,
+        method: str,
+        path: str,
+    ) -> BrokerError:
         reference = _request_id(response.headers) or f"alpaca:{operation}:{response.status}"
         category = (
             ErrorCategory.NOT_FOUND
@@ -237,7 +349,15 @@ class AlpacaPaperBroker:
             )
         )
         return BrokerError(
-            self._evidence(reference, received, received), category, f"HTTP {response.status}"
+            self._evidence(reference, received, received),
+            category,
+            _provider_rejection_detail(
+                status=response.status,
+                method=method,
+                path=path,
+                body=response.body,
+                forbidden=self._sensitive_fragments(),
+            ),
         )
 
     @staticmethod
@@ -302,7 +422,7 @@ class AlpacaPaperBroker:
     def _read_account(self, *, btc: bool) -> BrokerAccount | BrokerError:
         response, received = self._call("GET", "/v2/account")
         if response.status != 200:
-            return self._error(response, received, "account")
+            return self._error(response, received, "account", "GET", "/v2/account")
         try:
             payload = _object(response.body)
             provider_account_id = payload["id"]
@@ -371,7 +491,7 @@ class AlpacaPaperBroker:
     def read_clock(self) -> BrokerClock | BrokerError:
         response, received = self._call("GET", "/v2/clock")
         if response.status != 200:
-            return self._error(response, received, "clock")
+            return self._error(response, received, "clock", "GET", "/v2/clock")
         try:
             payload = _object(response.body)
             observed = _timestamp(payload["timestamp"])
@@ -411,7 +531,13 @@ class AlpacaPaperBroker:
             "GET", "/v2/assets/" + urllib.parse.quote(instrument.identifier, safe="")
         )
         if response.status != 200:
-            return self._error(response, received, "asset")
+            return self._error(
+                response,
+                received,
+                "asset",
+                "GET",
+                "/v2/assets/" + urllib.parse.quote(instrument.identifier, safe=""),
+            )
         try:
             payload = _object(response.body)
             if Instrument(str(payload["symbol"])) != instrument:
@@ -436,7 +562,7 @@ class AlpacaPaperBroker:
     def read_btc_asset(self) -> BtcBrokerAsset | BrokerError:
         response, received = self._call("GET", "/v2/assets/BTC%2FUSD")
         if response.status != 200:
-            return self._error(response, received, "btc-asset")
+            return self._error(response, received, "btc-asset", "GET", "/v2/assets/BTC%2FUSD")
         try:
             payload = _object(response.body)
             if payload.get("symbol") != "BTC/USD" or payload.get("class") != "crypto":
@@ -468,7 +594,7 @@ class AlpacaPaperBroker:
         """Explicit sellable BTC, never substituted from gross filled quantity."""
         response, received = self._call("GET", "/v2/positions/BTCUSD")
         if response.status != 200:
-            return self._error(response, received, "btc_available")
+            return self._error(response, received, "btc_available", "GET", "/v2/positions/BTCUSD")
         evidence = self._evidence("alpaca:btc_available", received, received)
         try:
             row = _object(response.body)
@@ -484,12 +610,18 @@ class AlpacaPaperBroker:
     def read_snapshot(self) -> BrokerSnapshot | BrokerError:
         positions_response, received = self._call("GET", "/v2/positions")
         if positions_response.status != 200:
-            return self._error(positions_response, received, "positions")
+            return self._error(positions_response, received, "positions", "GET", "/v2/positions")
         orders_response, orders_received = self._call(
             "GET", "/v2/orders?status=all&limit=500&nested=false"
         )
         if orders_response.status != 200:
-            return self._error(orders_response, orders_received, "orders")
+            return self._error(
+                orders_response,
+                orders_received,
+                "orders",
+                "GET",
+                "/v2/orders?status=all&limit=500&nested=false",
+            )
         try:
             try:
                 positions_payload = json.loads(positions_response.body.decode("utf-8"))
@@ -575,7 +707,7 @@ class AlpacaPaperBroker:
                 raise AlpacaPaperError("invalid requested reconciliation cut")
             cut = history_end
         if positions_response.status != 200:
-            return self._error(positions_response, cut, "positions")
+            return self._error(positions_response, cut, "positions", "GET", "/v2/positions")
         if start > cut:
             return BrokerError(
                 self._evidence("alpaca:history:future", cut, cut),
@@ -605,7 +737,13 @@ class AlpacaPaperBroker:
                 "GET", "/v2/orders?status=open&limit=500&nested=false"
             )
             if open_response.status != 200:
-                return self._error(open_response, open_received, "open-orders")
+                return self._error(
+                    open_response,
+                    open_received,
+                    "open-orders",
+                    "GET",
+                    "/v2/orders?status=open&limit=500&nested=false",
+                )
             open_payload = json.loads(open_response.body.decode("utf-8"))
             if not isinstance(open_payload, list) or len(open_payload) >= 500:
                 raise AlpacaPaperError("incomplete PAPER open-order inventory")
@@ -651,7 +789,9 @@ class AlpacaPaperBroker:
                     )
                 page_response, received = self._call("GET", "/v2/orders?" + query)
                 if page_response.status != 200:
-                    return self._error(page_response, received, "history")
+                    return self._error(
+                        page_response, received, "history", "GET", "/v2/orders?" + query
+                    )
                 page = json.loads(page_response.body.decode("utf-8"))
                 if not isinstance(page, list) or len(page) > 500:
                     raise AlpacaPaperError("malformed PAPER order history page")
@@ -720,7 +860,15 @@ class AlpacaPaperBroker:
         def read(path: str) -> tuple[bytes, datetime]:
             response, received = self._call("GET", path)
             if response.status != 200:
-                raise AlpacaPaperError(f"activity read HTTP {response.status}")
+                raise AlpacaPaperError(
+                    _provider_rejection_detail(
+                        status=response.status,
+                        method="GET",
+                        path=path,
+                        body=response.body,
+                        forbidden=self._sensitive_fragments(),
+                    )
+                )
             return response.body, received
 
         try:
@@ -757,7 +905,7 @@ class AlpacaPaperBroker:
         )
         response, received = self._call("GET", path)
         if response.status != 200:
-            return self._error(response, received, "lookup")
+            return self._error(response, received, "lookup", "GET", path)
         try:
             return self._order(
                 _object(response.body), received, _request_id(response.headers) or "alpaca:lookup"
@@ -851,20 +999,25 @@ class AlpacaPaperBroker:
                     None,
                     BrokerError(evidence, ErrorCategory.MALFORMED, "malformed POST response"),
                 )
+        detail = _provider_rejection_detail(
+            status=response.status,
+            method="POST",
+            path="/v2/orders",
+            body=response.body,
+            forbidden=self._sensitive_fragments(),
+        )
         if 400 <= response.status < 500:
             return SubmissionResult(
                 evidence,
                 request,
                 SubmissionStatus.REJECTED,
                 None,
-                BrokerError(
-                    evidence, ErrorCategory.DEFINITIVE_REJECTION, f"HTTP {response.status}"
-                ),
+                BrokerError(evidence, ErrorCategory.DEFINITIVE_REJECTION, detail),
             )
         return SubmissionResult(
             evidence,
             request,
             SubmissionStatus.UNCERTAIN,
             None,
-            BrokerError(evidence, ErrorCategory.UNAVAILABLE, f"HTTP {response.status}"),
+            BrokerError(evidence, ErrorCategory.UNAVAILABLE, detail),
         )
