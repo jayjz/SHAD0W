@@ -35,8 +35,13 @@ historical coverage. No caller may upgrade those flags merely because a page is
 short, a day elapsed, or a position happens to match. Sequential reads are not
 atomic. Unknown activities remain explicit, malformed rows reject, identical
 activity IDs deduplicate, and conflicting duplicates reject. Corrections/reversals
-fail closed. Expanded date bounds accommodate date-only fees; trade observations
-outside the requested exact window fail closed rather than being silently dropped.
+fail closed. Expanded provider date bounds accommodate date-only fees. The
+collector removes ordinary BTC FILL spillover outside the exact requested time
+window and ordinary CFEE/FEE spillover outside the inclusive requested provider
+date window. Rows carrying `previous_id` or `correction_of` bypass this filtering
+and retain strict correction handling. Malformed dates reject; translation still
+rejects out-of-window fills or fees reaching it. Filtering does not establish fee
+linkage, asset identity, historical coverage, or finality.
 
 ## Normalized accounting
 

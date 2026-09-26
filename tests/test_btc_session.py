@@ -363,7 +363,6 @@ def test_stale_quote_and_duplicate_client_id_fail_closed(
     assert broker.posts == 2
 
 
-
 def test_session_persists_structured_market_validation_error(
     journal: ExecutionJournal, tmp_path: Path
 ) -> None:

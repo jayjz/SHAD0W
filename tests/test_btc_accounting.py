@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from shadow.adapters.alpaca.crypto_activities import translate_activities
 from shadow.adapters.alpaca.paper_broker import AlpacaPaperBroker, HttpResponse, PaperCredentials
 from shadow.execution.broker import (
     BrokerError,
@@ -328,3 +329,86 @@ def test_legacy_fee_has_no_invented_link_or_asset_and_unknown_is_explicit() -> N
     assert isinstance(result, CryptoActivityEvidence)
     assert result.fees[0].asset is None and result.fees[0].execution_id is None
     assert result.unsupported == ("correction:BUST",)
+
+
+def fee_row(kind: str = "CFEE", day_offset: int = 0) -> dict[str, object]:
+    return dict(
+        id="fee",
+        activity_type=kind,
+        date=(NOW + timedelta(days=day_offset)).date().isoformat(),
+        net_amount="0" if kind == "CFEE" else "-0.12",
+        qty="-0.000003",
+        symbol="BTCUSD",
+        status="executed",
+    )
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+@pytest.mark.parametrize("day_offset", [-1, 1])
+def test_widened_query_filters_ordinary_fee_spillover(kind: str, day_offset: int) -> None:
+    result, transport = collect([[fee_row(kind, day_offset)]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert result.fees == () and result.executions == () and result.unsupported == ()
+    assert result.query_exhausted and not result.history_verified
+    assert result.fee_complete_ids == ()
+    assert "after=2026-09-17" in transport.calls[-1][1]
+    assert "until=2026-09-19" in transport.calls[-1][1]
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+def test_in_window_fee_preserves_unproven_linkage_and_finality(kind: str) -> None:
+    result, _ = collect([[fill_row(), fee_row(kind)]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert len(result.fees) == 1
+    fee = result.fees[0]
+    assert fee.provider_date == NOW.date()
+    assert fee.execution_id is None
+    assert fee.asset == (None if kind == "CFEE" else "USD")
+    assert not result.history_verified and result.fee_complete_ids == ()
+    with pytest.raises(ValueError if kind == "CFEE" else LookupError):
+        inventory_effects(result)
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+@pytest.mark.parametrize("value", [None, "bad", "2026-02-30", " 2026-09-17", 20260917])
+def test_malformed_fee_date_fails_closed(kind: str, value: object) -> None:
+    result, _ = collect([[dict(fee_row(kind), date=value)]])
+    assert isinstance(result, BrokerError)
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+@pytest.mark.parametrize("marker", ["previous_id", "correction_of"])
+@pytest.mark.parametrize("day_offset", [-1, 1])
+def test_fee_corrections_bypass_spillover_filter(kind: str, marker: str, day_offset: int) -> None:
+    row = dict(fee_row(kind, day_offset), net_amount="1", qty="1")
+    row[marker] = "original"
+    result, _ = collect([[row]])
+    assert isinstance(result, CryptoActivityEvidence)
+    assert result.fees == ()
+    assert result.unsupported == ("fee:correction",)
+    with pytest.raises(ValueError, match="unsupported broker activity"):
+        inventory_effects(result)
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+def test_in_window_fee_reversal_still_rejects(kind: str) -> None:
+    result, _ = collect([[dict(fee_row(kind), net_amount="1", qty="1")]])
+    assert isinstance(result, BrokerError)
+
+
+@pytest.mark.parametrize("kind", ["CFEE", "FEE"])
+@pytest.mark.parametrize("day_offset", [-1, 1])
+def test_translator_still_rejects_fee_spillover(kind: str, day_offset: int) -> None:
+    with pytest.raises(ValueError, match="fee escaped requested date window"):
+        translate_activities(
+            (fee_row(kind, day_offset),),
+            evidence=EV,
+            history_start=NOW - timedelta(minutes=1),
+            history_end=NOW,
+        )
+
+
+def test_fee_spillover_does_not_hide_conflicting_duplicates_or_bad_identity() -> None:
+    row = fee_row(day_offset=-1)
+    assert isinstance(collect([[row, dict(row, qty="-1")]])[0], BrokerError)
+    assert isinstance(collect([[dict(row, id=None)]])[0], BrokerError)

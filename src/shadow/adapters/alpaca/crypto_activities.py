@@ -142,7 +142,7 @@ def collect_activity_rows(
     ):
         raise ValueError("explicit bounded activity window required")
     # NTA date precision differs from FILL timestamps; expand query bounds to
-    # whole dates, then require returned trade times inside the requested cut.
+    # whole dates, then bound ordinary fills by time and fees by provider date.
     query = {
         "after": (history_start.date() - timedelta(days=1)).isoformat(),
         "until": (history_end.date() + timedelta(days=1)).isoformat(),
@@ -167,7 +167,7 @@ def collect_activity_rows(
         if len(page) < 100:
             bounded = []
             for row in rows.values():
-                # Keep translation strict, but remove ordinary executions that
+                # Keep translation strict, but remove ordinary fills/fees that
                 # the deliberately date-widened provider query may return.
                 # Corrections and unsupported fills retain their existing
                 # translation behavior and are not reinterpreted here.
@@ -187,6 +187,14 @@ def collect_activity_rows(
                     if stamp.tzinfo is None or stamp.utcoffset() is None:
                         raise ValueError("malformed activity execution timestamp")
                     if not history_start <= stamp <= history_end:
+                        continue
+                elif (
+                    row.get("activity_type") in ("CFEE", "FEE")
+                    and row.get("previous_id") is None
+                    and row.get("correction_of") is None
+                ):
+                    provider_date = date.fromisoformat(_text(row.get("date")))
+                    if not history_start.date() <= provider_date <= history_end.date():
                         continue
                 bounded.append(row)
             return tuple(bounded), received
