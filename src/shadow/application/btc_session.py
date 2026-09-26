@@ -18,6 +18,7 @@ from shadow.application.crypto_paper import (
     PaperApplicationError,
 )
 from shadow.domain.crypto_market import CryptoQuote, CryptoTrade
+from shadow.domain.errors import MarketDataValidationError
 from shadow.execution.broker import (
     BrokerPosition,
     BrokerSnapshot,
@@ -431,8 +432,17 @@ class BtcPaperSession(BtcPaperExperiment):
         except Exception as exc:
             self.stop_reason = "SESSION_HALTED"
             self.error = type(exc).__name__
+            error_evidence: dict[str, object] = {"type": type(exc).__name__}
+            if isinstance(exc, MarketDataValidationError):
+                error_evidence.update(
+                    {
+                        "invariant": exc.invariant,
+                        "record_index": exc.record_index,
+                        "message": str(exc),
+                    }
+                )
             self.store.halt(self._clock(), f"session failed: {type(exc).__name__}")
-            self._record("error", {"type": type(exc).__name__})
+            self._record("error", error_evidence)
         finally:
             close = getattr(events, "close", None)
             if callable(close):

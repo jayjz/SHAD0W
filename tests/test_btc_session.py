@@ -1,5 +1,6 @@
 """Bounded lifecycle composition; synthetic fee coverage is never provider evidence."""
 
+import json
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import timedelta
@@ -11,6 +12,7 @@ import pytest
 from shadow.application.btc_history import HISTORICAL, LIVE, MarketEvidence
 from shadow.application.btc_session import BtcPaperSession
 from shadow.domain.crypto_market import CryptoQuote, CryptoTrade, UtcNanoseconds
+from shadow.domain.errors import MarketDataValidationError
 from shadow.execution.broker import (
     BrokerError,
     BrokerFill,
@@ -359,6 +361,66 @@ def test_stale_quote_and_duplicate_client_id_fail_closed(
     assert result["unresolved"]
     assert result["stop_reason"] == "SESSION_HALTED"
     assert broker.posts == 2
+
+
+
+def test_session_persists_structured_market_validation_error(
+    journal: ExecutionJournal, tmp_path: Path
+) -> None:
+    runner, broker, _clock = session(journal, tmp_path)
+
+    def invalid_live(_duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        raise MarketDataValidationError(
+            "availability_time",
+            "must not precede observation_time; synthetic test detail",
+            7,
+        )
+        yield  # pragma: no cover
+
+    result = runner.run(lambda a, b: (), invalid_live, 60)
+
+    assert result["stop_reason"] == "SESSION_HALTED"
+    assert result["error_type"] == "MarketDataValidationError"
+    assert broker.posts == 0
+    errors = [
+        json.loads(row[1])
+        for row in journal.application_events("btc-session")
+        if isinstance(row, tuple) and row[0] == "error"
+    ]
+    assert errors == [
+        {
+            "invariant": "availability_time",
+            "message": (
+                "availability_time at record 7: "
+                "must not precede observation_time; synthetic test detail"
+            ),
+            "record_index": 7,
+            "type": "MarketDataValidationError",
+        }
+    ]
+
+
+def test_session_generic_error_does_not_persist_exception_message(
+    journal: ExecutionJournal, tmp_path: Path
+) -> None:
+    runner, broker, _clock = session(journal, tmp_path)
+
+    def broken_live(_duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        raise RuntimeError("synthetic-secret-that-must-not-be-persisted")
+        yield  # pragma: no cover
+
+    result = runner.run(lambda a, b: (), broken_live, 60)
+
+    assert result["stop_reason"] == "SESSION_HALTED"
+    assert result["error_type"] == "RuntimeError"
+    assert broker.posts == 0
+    errors = [
+        json.loads(row[1])
+        for row in journal.application_events("btc-session")
+        if isinstance(row, tuple) and row[0] == "error"
+    ]
+    assert errors == [{"type": "RuntimeError"}]
+    assert "synthetic-secret" not in json.dumps(errors)
 
 
 def test_probe_cannot_enable_unbounded_dispatch(journal: ExecutionJournal) -> None:
