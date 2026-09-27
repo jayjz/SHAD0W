@@ -30,12 +30,15 @@ historical surfaces retained for compatibility, evidence, or staged removal.
   - read-only legacy/equity live-data path
   - retained pending separate audit
 
-## Transitional removal candidates
+## Retired application entrypoints
 
 - `shadow-paper-prepare`
   - original generic/equity PAPER preparation application
-  - superseded at the application layer
-  - underlying risk/journal primitives may remain active
+  - retired during repository convergence
+  - historical workflow preserved in `docs/P5A_CANARY_RUNBOOK.md`
+  - underlying risk/journal primitives remain active where independently used
+
+## Transitional removal candidates
 
 - `shadow-paper-canary`
   - original generic/equity PAPER canary application

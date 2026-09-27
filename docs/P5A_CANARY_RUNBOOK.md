@@ -1,5 +1,19 @@
 # P5A one-shot Alpaca PAPER canary
 
+> [!WARNING]
+> **Historical runbook.** This document preserves the original generic/equity
+> P5A one-shot PAPER canary workflow. The `shadow-paper-prepare` application
+> entrypoint has been retired from the current CLI surface, and
+> `shadow-paper-canary` is transitional.
+>
+> Current BTC PAPER workflows are documented in:
+> - `docs/BTC_PAPER_SESSION.md`
+> - `docs/BTC_PAPER_SOAK.md`
+> - `docs/STATUS.md`
+>
+> Commands below are retained as historical evidence and are not current
+> operator instructions.
+
 This is an early bounded supervised, one-order PAPER integration probe. It is not
 the final P5A.8 acceptance canary, a daemon, a strategy validation, an exit
 procedure, broker-authoritative reconciliation, or permission to use an Alpaca live
