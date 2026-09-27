@@ -9,7 +9,7 @@ SHAD0W is an experimental quantitative research system for asking a harder quest
 The repository combines deterministic historical research with a deliberately constrained Alpaca PAPER integration. It is designed to preserve chronology, evidence provenance, execution state, and negative results rather than silently converting missing information into trading authority.
 
 > [!IMPORTANT]
-> SHAD0W does **not** support live-capital trading. The current BTC path is bounded to one PAPER entry and one linked exit per session. Continuous repeated trading is not implemented, and no strategy in this repository is claimed to be profitable or validated.
+> SHAD0W does **not** support live-capital trading. The strict BTC PAPER session is bounded to one entry and one linked exit per session. A separate experimental PAPER_SOAK lane supports a bounded number of repeated PAPER cycles. Unbounded continuous trading is not implemented, and no strategy in this repository is claimed to be profitable or validated.
 
 See [docs/STATUS.md](docs/STATUS.md) for the canonical current capability snapshot.
 
@@ -237,7 +237,7 @@ This distinction matters because SHAD0W deliberately preserves old design and ex
 SHAD0W currently does not claim or provide:
 
 - a validated or profitable strategy;
-- continuous repeated PAPER trading;
+- unbounded continuous PAPER trading;
 - automatic recovery or retry after an uncertain broker submission;
 - proof-grade Alpaca crypto fee linkage/finality;
 - automatic liquidation at timeout or shutdown;
