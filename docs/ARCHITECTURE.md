@@ -65,7 +65,8 @@ The durable commit precedes the external POST. An uncertain outcome is not retri
 
 ## Operational lifecycle
 
-The bounded BTC path uses broker evidence to project one of six states:
+The strict bounded BTC session uses broker evidence to project one of six states.
+The separate experimental soak lifecycle is defined below:
 
 ```mermaid
 stateDiagram-v2
@@ -174,4 +175,23 @@ Research results cannot be imported as broker state. Operational state cannot re
 
 The current system does not require Kafka, Redis, Celery, Kubernetes, microservices, a distributed database, or a web frontend. Additional infrastructure should be introduced only when a measured deployment requirement justifies it.
 
-Likewise, SHAD0W does not currently implement live-capital support, continuous repeated trading, dynamic leverage, portfolio optimization, or LLM execution authority.
+Likewise, SHAD0W does not currently implement live-capital support, unbounded continuous trading, dynamic leverage, portfolio optimization, or LLM execution authority. Bounded experimental PAPER cycles are described below.
+
+## Separate PAPER_SOAK experimental lane
+
+The [BTC PAPER_SOAK contract](BTC_PAPER_SOAK.md) defines an explicitly separate
+operational authority for bounded live strategy evaluation. The application in
+`application/btc_soak.py` composes the existing raw history/feature/proposal
+machinery, owned journal and fixed-origin PAPER adapter. Its lifecycle validator
+in `execution/btc_soak.py` and independent evaluator in `risk/btc_soak.py` never
+call the proof reducer to manufacture usable inventory or discard proof rejection
+reasons. No existing session/dispatcher/risk/reducer semantics change.
+
+Soak authority is `PAPER_SOAK_OPERATIONAL`, recorded in a distinct application
+namespace. It requires complete linked orders/executions and fresh position plus
+equal available quantity for operational SELL sizing. Fee observations are retained
+without inferred linkage or finality. Operational FLAT permits a subsequent
+bounded cycle, but has no proof-grade meaning. Durable commit precedes the single
+POST; final callback rechecks independent risk, controls and deadlines. Interrupted
+journals cannot regain submission authority. A soak-only heartbeat driver keeps
+polling/controls active during source silence without changing strict session I/O.

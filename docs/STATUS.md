@@ -12,7 +12,7 @@ SHAD0W currently has two mature foundations and one bounded operational integrat
 2. live and replayable market-data evidence;
 3. a constrained BTC/USD Alpaca PAPER session with strict risk, journal, dispatch, and reconciliation boundaries.
 
-The BTC path is **not** continuous trading. It permits at most one entry and one linked exit in a bounded session. Real-provider crypto fee linkage/finality remains insufficient for strict automatic exit proof, and live-capital trading is unsupported.
+The proof-grade BTC session permits at most one entry and one linked exit. A separate bounded [PAPER_SOAK experiment](BTC_PAPER_SOAK.md) now supports successive operational PAPER cycles for strategy behavior evaluation, with a distinct short-horizon canary and no fee-finality upgrade. This addition has synthetic validation only. Real-provider crypto fee linkage/finality remains insufficient for strict automatic exit proof, and live-capital trading is unsupported.
 
 ## IMPLEMENTED
 
@@ -74,6 +74,16 @@ The BTC path is **not** continuous trading. It permits at most one entry and one
 - Strategy and probe identities kept separate.
 
 Fake-broker coverage exercises bounded round-trip and restart behavior. Real-provider validation has established live reads and accepted BTC PAPER entry behavior, but this is not proof that automatic exit can always complete.
+
+### Separate BTC PAPER soak experiment
+
+- `shadow-btc-paper-loop --paper-soak`, explicit PAPER-only origin, duration and cycle bounds.
+- Separate `PAPER_SOAK_OPERATIONAL` lifecycle, independent risk and durable commit-before-send path.
+- Fresh broker position and equal `qty_available` can size a strategy SELL after completed order/fill observation without proving fee linkage.
+- One position, BUY+SELL maximum per cycle; subsequent cycle only after operational flat.
+- `paper_soak_canary`: 3h trend / 1h momentum / 2h volatility; canonical 72h/6h/24h unchanged.
+- Heartbeat broker polling, kill switch, raw evidence and deterministic experiment summary.
+- Fresh journals only; no automatic restart/resumption, account adoption, fee inference or proof-journal mutation.
 
 ## PARTIALLY IMPLEMENTED / EXTERNALLY BLOCKED
 

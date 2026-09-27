@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from decimal import Decimal, localcontext
 from enum import StrEnum
 
@@ -245,3 +245,14 @@ def propose(
             config.round_trip_cost,
             config.cost_safety_margin,
         )
+
+
+def paper_soak_canary() -> BtcTrendConfig:
+    """Execution/behavior canary only: 3 closes, two returns, no profitability claim."""
+    return replace(
+        engineering_canary(),
+        slow_horizon_ns=3 * HOUR_NS,
+        fast_horizon_ns=HOUR_NS,
+        volatility_horizon_ns=2 * HOUR_NS,
+        minimum_history=3,
+    )

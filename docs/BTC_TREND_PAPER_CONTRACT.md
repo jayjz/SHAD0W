@@ -61,6 +61,14 @@ These are explicit engineering assumptions, not observed fees or profit forecast
 Existing fixed-quantity execution economics prices resolved fills and cannot
 represent this pre-entry signal-distance hurdle; it remains unchanged.
 
+## Separate PAPER soak strategy profile
+
+`paper_soak_canary()` uses the same deterministic feature/proposal implementation
+with 3h trend, 1h momentum, 2h volatility and three completed closes. It has a
+distinct configuration ID; `engineering_canary()` and all its costs and windows
+remain unchanged. The shorter profile is an execution/behavior canary, not
+canonical-strategy profitability evidence. See the [soak contract](BTC_PAPER_SOAK.md).
+
 ## Typed execution and reconciliation foundations
 
 `BtcSubmitRequest` is an explicit BTC spot subtype; the equity SubmitRequest

@@ -1,5 +1,9 @@
 # Bounded BTC PAPER session
 
+This strict session remains unchanged. The separate [PAPER_SOAK experiment](BTC_PAPER_SOAK.md)
+uses explicitly operational authority and cannot adopt this session’s unresolved
+position, journal or fee-finality claims.
+
 `shadow-btc-paper-session` is a separate application from the unchanged one-shot
 experiment. It permits one BUY and one linked SELL, never a second entry. The
 journal binds mode, quantity, absolute deadline, strategy, policy and revision.
