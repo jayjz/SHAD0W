@@ -274,7 +274,7 @@ def test_repeated_no_signal_trades_only_close_intervals(
                 observation_time=UtcNanoseconds(ns),
                 availability_time=UtcNanoseconds(ns),
             )
-            assert len(journal.application_events("btc-session")) == i - 1
+            assert len(journal.application_events("btc-session")) == i
             yield _trade(ns, Decimal(100), LIVE, ns)
 
     result = runner.run(historical, live, 14400)
@@ -452,3 +452,132 @@ def test_restart_never_extends_deadline(journal: ExecutionJournal, tmp_path: Pat
     result = runner.run(lambda a, b: (), lambda duration: events(broker, clock), 60)
     assert broker.posts == 0
     assert result["live_quotes"] == 0
+
+
+@pytest.mark.parametrize("missing_index,allowed", [(70, False), (0, True)])
+def test_historical_readiness_gates_live_source(
+    journal: ExecutionJournal, tmp_path: Path, missing_index: int, allowed: bool
+) -> None:
+    runner, broker, clock = session(journal, tmp_path, probe=False)
+    boundary = utc_ns(clock()) // HOUR_NS * HOUR_NS
+    called = []
+
+    def historical(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+        yield tuple(
+            _trade(t, Decimal(100), HISTORICAL, boundary)
+            for i, t in enumerate(range(start, end, HOUR_NS))
+            if i != missing_index
+        )
+
+    def live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        called.append(duration)
+        return ()
+
+    result = runner.run(historical, live, 86400)
+    assert bool(called) is allowed
+    assert result["stop_reason"] == ("DURATION_EXPIRED" if allowed else "DATA_NOT_READY")
+    readiness = result["readiness"]
+    assert isinstance(readiness, dict)
+    assert readiness["reason"] == "MISSING_INTERVAL_CLOSE"
+    assert readiness["can_become_ready"] is allowed
+    assert readiness["required_interval_count"] == 73
+    assert len(readiness["missing_close_intervals"]) == 1
+    assert broker.posts == 0
+    assert result["committed_attempts"] == 0
+    assert result["error_type"] is None
+    assert not runner.store.halted
+    assert any(
+        isinstance(row, tuple) and row[0] == "readiness"
+        for row in journal.application_events("btc-session")
+    )
+
+
+def test_probe_skips_history_and_readiness(journal: ExecutionJournal, tmp_path: Path) -> None:
+    runner, broker, clock = session(journal, tmp_path)
+
+    def historical(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+        pytest.fail("probe must not request history")
+
+    result = runner.run(historical, lambda duration: events(broker, clock), 60)
+    assert result["readiness"] is None
+    assert result["stop_reason"] == "ROUND_TRIP_COMPLETE"
+    assert broker.posts == 2
+
+
+def test_empty_history_stops_without_submission(journal: ExecutionJournal, tmp_path: Path) -> None:
+    runner, broker, _clock = session(journal, tmp_path, probe=False)
+
+    def live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        pytest.fail("unusable history must not open live source")
+
+    result = runner.run(lambda a, b: (), live, 86400)
+    assert result["stop_reason"] == "DATA_NOT_READY"
+    assert broker.posts == 0
+    assert result["committed_attempts"] == 0
+    assert result["error_type"] is None
+    assert not runner.store.halted
+    # Restarting a DATA_NOT_READY session with no completed rows stays clean.
+    result = runner.run(lambda a, b: (), live, 86400)
+    assert result["stop_reason"] == "DATA_NOT_READY"
+    assert not runner.store.halted
+    assert broker.posts == 0
+
+
+def test_readiness_uses_remaining_immutable_deadline(
+    journal: ExecutionJournal, tmp_path: Path
+) -> None:
+    runner, broker, clock = session(journal, tmp_path, probe=False)
+    boundary = utc_ns(clock()) // HOUR_NS * HOUR_NS
+
+    def historical(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+        yield tuple(
+            _trade(t, Decimal(100), HISTORICAL, utc_ns(clock()))
+            for t in range(start, end, HOUR_NS)
+            if t != boundary - 44 * HOUR_NS
+        )
+
+    # Warm-start consumes most of the bound lifetime; a fresh 24h budget would
+    # incorrectly permit this missing close to age out.
+    def slow_history(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+        yield from historical(start, end)
+        clock.value += timedelta(hours=20)
+
+    def live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        pytest.fail("remaining lifetime cannot cover recovery")
+
+    result = runner.run(slow_history, live, 86400)
+    assert result["stop_reason"] == "DATA_NOT_READY"
+    deadline = runner.deadline
+    result = runner.run(historical, live, 86400)
+    assert runner.deadline == deadline
+    assert result["stop_reason"] == "DATA_NOT_READY"
+    assert broker.posts == 0
+
+
+@pytest.mark.parametrize("minimum_history,required", [(73, 73), (2, 72)])
+def test_empty_restart_depth_uses_feature_contract(
+    journal: ExecutionJournal, tmp_path: Path, minimum_history: int, required: int
+) -> None:
+    runner, broker, clock = session(journal, tmp_path, probe=False)
+    runner.config = replace(runner.config, minimum_history=minimum_history)
+    boundary = utc_ns(clock()) // HOUR_NS * HOUR_NS
+    runner.evidence.begin(start_ns=boundary - HOUR_NS, live_boundary_ns=boundary)
+    requests = []
+
+    def historical(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+        requests.append((start, end))
+        return ()
+
+    def live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        pytest.fail("empty history cannot become ready")
+
+    result = runner.run(historical, live, 86400)
+    assert requests == [(boundary - (required + 1) * HOUR_NS, boundary)]
+    readiness = result["readiness"]
+    assert isinstance(readiness, dict)
+    assert readiness["required_interval_count"] == required
+    assert result["stop_reason"] == "DATA_NOT_READY"
+    assert result["error_type"] is None
+    assert result["committed_attempts"] == 0
+    assert broker.posts == 0
+    assert not runner.store.halted

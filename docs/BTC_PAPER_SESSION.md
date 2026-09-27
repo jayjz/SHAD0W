@@ -13,6 +13,41 @@ entry filters and abstention reasons. NO_SIGNAL does not end the session. Quotes
 never close intervals. The current partially captured hour cannot trigger a
 strategy entry. A relay selection has no direct-provider fallback.
 
+After historical warm-start (including restart catch-up), strategy sessions record
+an immutable, typed readiness assessment before opening the live strategy source.
+The `btc-session` journal contains a `readiness` event and the summary includes its
+latest payload: `ready`, `total_completed_intervals`, `required_interval_count`,
+`missing_close_intervals` (start/end nanoseconds), `continuity_failures` (invalid
+widths or mismatched adjacent boundaries), `reason`, `assessed_at_ns`,
+`deadline_ns`, `earliest_possible_ready_ns`, and `can_become_ready`.
+
+The required count is derived from the unchanged feature windows: the maximum of
+minimum history, slow periods, fast periods plus one, and volatility periods plus
+one (currently 73). Diagnostics cover the trailing required window, while the
+completed count covers all history. `ready` uses the unchanged feature evaluator.
+Stable reasons are `READY`, `NONCONTIGUOUS_HISTORY`, `MISSING_INTERVAL_CLOSE`, then
+`INSUFFICIENT_HISTORY` in that precedence; the last also covers history not yet
+available at assessment time.
+
+Recovery uses the contiguous, correctly sized, nonmissing suffix. For each usable
+suffix length k, its optimistic recovery bound is the last completed end plus
+(73 - k) hours, no earlier than assessment or retained-row availability. Taking
+the earliest bound also allows unavailable rows to age out. Empty history uses
+the current hourly boundary as its anchor. This assumes ideal future trade
+arrival and allows immediate completion of a pending historical interval; it is
+a feasibility bound, not a prediction or permission to trade. It creates no
+prices or feature rows. Old defects outside the trailing window do not block it.
+
+If even this optimistic bound cannot precede the effective deadline, the session
+ends cleanly with `stop_reason=DATA_NOT_READY`, without opening the live source,
+committing an attempt, or creating a halt. The deadline respects both the original
+journal-bound expiry and the remaining monotonic duration after warm-start;
+restart cannot grant another full duration. Equality with expiry is too late.
+A missing close that can age out before expiry permits the loop to proceed, but
+actual live-trigger, feature availability, chronology, risk, reconciliation,
+PAPER dispatch and fee-finality checks still apply. There is no forward-fill,
+synthetic close, or provider-bar substitution. `--probe` skips this gate entirely.
+
 The separate `--probe` mode proposes broker plumbing BUY/SELL intents, explicitly
 marked `paper_plumbing_probe`. Its price witness is not a historical strategy
 feature. Independent risk still checks binding, PAPER type, controls, quote age,

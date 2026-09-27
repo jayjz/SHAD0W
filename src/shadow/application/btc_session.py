@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from shadow.adapters.alpaca.paper_identity import derive_paper_client_order_identity
+from shadow.application.btc_readiness import assess_btc_readiness, required_btc_interval_count
 from shadow.application.crypto_paper import (
     BtcPaperExperiment,
     HistoricalSource,
@@ -315,6 +316,8 @@ class BtcPaperSession(BtcPaperExperiment):
     ) -> dict[str, object]:
         if not math.isfinite(duration_seconds) or not 0 < duration_seconds <= 86400:
             raise PaperApplicationError("session duration must be within (0, 86400]")
+        self.stop_reason = "DURATION_EXPIRED"
+        self.error = None
         self.store.configure(self.run_config)
         bindings = self.journal.application_events("btc-session-binding")
         if bindings:
@@ -358,7 +361,13 @@ class BtcPaperSession(BtcPaperExperiment):
             if not self.plumbing_probe:
                 if self.evidence.events:
                     boundary = utc_ns(self._clock()) // HOUR_NS * HOUR_NS
-                    start = self.evidence.history.intervals[-1].end_ns
+                    rows = self.evidence.history.intervals
+                    start = (
+                        rows[-1].end_ns
+                        if rows
+                        else boundary
+                        - (required_btc_interval_count(self.config) + 1) * self.config.interval_ns
+                    )
                     self.evidence.begin(start_ns=start, live_boundary_ns=boundary)
                     for page in historical(start, boundary):
                         self.evidence.trades(page)
@@ -370,6 +379,18 @@ class BtcPaperSession(BtcPaperExperiment):
             )
             if remaining <= 0:
                 return self.summary()
+            if not self.plumbing_probe:
+                now_ns = utc_ns(self._clock())
+                readiness = assess_btc_readiness(
+                    self.evidence.history.intervals,
+                    config=self.config,
+                    as_of_ns=now_ns,
+                    deadline_ns=min(utc_ns(self.deadline), now_ns + int(remaining * 1e9)),
+                )
+                self._record("readiness", asdict(readiness))
+                if not readiness.ready and not readiness.can_become_ready:
+                    self.stop_reason = "DATA_NOT_READY"
+                    return self.summary()
             events = live(remaining)
             for event in events:
                 if self._clock() >= self.deadline or time.monotonic() >= self.mono_deadline:
@@ -461,6 +482,14 @@ class BtcPaperSession(BtcPaperExperiment):
         payload: dict[str, object] = {
             "mode": "paper_plumbing_probe" if self.plumbing_probe else "strategy",
             "stop_reason": self.stop_reason,
+            "readiness": next(
+                (
+                    json.loads(row[1])
+                    for row in reversed(self.journal.application_events("btc-session"))
+                    if isinstance(row, tuple) and row[0] == "readiness"
+                ),
+                None,
+            ),
             "live_trades": self.trades,
             "live_quotes": self.quotes,
             "intervals_evaluated": sum(d["end_ns"] is not None for d in decisions),
