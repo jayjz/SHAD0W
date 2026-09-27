@@ -355,7 +355,10 @@ class BtcPaperSession(BtcPaperExperiment):
             ):
                 self.stop_reason = "RESTART_RECONCILIATION_ONLY"
                 return self.summary()
-            if remaining <= 0 or self.store.halted:
+            if self.store.halted:
+                self.stop_reason = "UNRESOLVED_OR_HALTED"
+                return self.summary()
+            if remaining <= 0:
                 return self.summary()
             fresh_start = ((utc_ns(self._clock()) + HOUR_NS - 1) // HOUR_NS) * HOUR_NS
             if not self.plumbing_probe:

@@ -31,7 +31,8 @@ available at assessment time.
 
 Recovery uses the contiguous, correctly sized, nonmissing suffix. For each usable
 suffix length k, its optimistic recovery bound is the last completed end plus
-(73 - k) hours, no earlier than assessment or retained-row availability. Taking
+(N - k) intervals, where N is the config-derived required count (currently 73),
+no earlier than assessment or retained-row availability. Taking
 the earliest bound also allows unavailable rows to age out. Empty history uses
 the current hourly boundary as its anchor. This assumes ideal future trade
 arrival and allows immediate completion of a pending historical interval; it is

@@ -581,3 +581,46 @@ def test_empty_restart_depth_uses_feature_contract(
     assert result["committed_attempts"] == 0
     assert broker.posts == 0
     assert not runner.store.halted
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_zero_attempt_durable_halt_survives_restart(
+    journal: ExecutionJournal, tmp_path: Path, expired: bool
+) -> None:
+    runner, broker, _clock = session(journal, tmp_path)
+
+    def broken_live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+        raise RuntimeError("synthetic failure")
+
+    result = runner.run(lambda a, b: (), broken_live, 60)
+    assert result["stop_reason"] == "SESSION_HALTED"
+    assert result["error_type"] == "RuntimeError"
+    assert runner.store.halted
+    assert result["committed_attempts"] == 0
+    assert broker.posts == 0
+    deadline = runner.deadline
+    journal.close()
+    with ExecutionJournal.reopen(
+        path=journal.path,
+        owner=journal._owner,
+        account_id="paper-account",
+        operational_scope="scope",
+    ) as reopened:
+        restarted, broker, clock = session(reopened, tmp_path)
+        if expired:
+            clock.value += timedelta(seconds=61)
+
+        def no_history(start: int, end: int) -> Iterable[tuple[CryptoTrade, ...]]:
+            pytest.fail("durable halt must not open history")
+
+        def no_live(duration: float) -> Iterable[CryptoTrade | CryptoQuote]:
+            pytest.fail("durable halt must not open live source")
+
+        result = restarted.run(no_history, no_live, 60)
+        assert result["stop_reason"] == "UNRESOLVED_OR_HALTED"
+        assert result["error_type"] is None
+        assert result["unresolved"]
+        assert restarted.store.halted
+        assert result["committed_attempts"] == 0
+        assert broker.posts == 0
+        assert restarted.deadline == deadline
